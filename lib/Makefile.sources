@@ -58,10 +58,12 @@ lib_source_list =	 	\
 	gen7_render.h		\
 	gen8_render.h		\
 	gen9_render.h		\
+	gen10_render.h		\
 	rendercopy_gen6.c	\
 	rendercopy_gen7.c	\
 	rendercopy_gen8.c	\
 	rendercopy_gen9.c	\
+	rendercopy_gen10.c	\
 	rendercopy.h		\
 	sw_sync.c		\
 	sw_sync.h		\
