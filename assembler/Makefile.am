@@ -52,3 +52,59 @@ EXTRA_DIST = \
 	README \
 	TODO \
 	intel-gen4asm.pc.in
+
+if HAVE_INTROSPECTION
+
+lib_LTLIBRARIES = libgenasm.la
+
+libgenasm_la_SOURCES =		\
+	gen_asm_assembler.h	\
+	gen_asm_assembler.c	\
+	$(NULL)
+
+libgenasm_la_CFLAGS =	\
+	$(GLIB_CFLAGS)	\
+	$(NULL)
+libgenasm_la_LDFLAGS =	\
+	-export-dynamic	\
+	$(NULL)
+libgenasm_la_LIBADD =	\
+	$(GLIB_LIBS)	\
+	libbrw.la	\
+	$(NULL)
+
+
+BUILT_GIRSOURCES =
+
+GenAsm-0.1.gir: $(INTROSPECTION_SCANNER) libgenasm.la
+	$(QUIET_GEN) \
+		$(INTROSPECTION_SCANNER) -v \
+		--namespace GenAsm --nsversion=0.1 \
+		--warn-all \
+		--add-include-path=$(srcdir) --add-include=path=. \
+		--include=GObject-2.0 \
+		--library=libgenasm.la \
+		--libtool="${LIBTOOL}" \
+		--output $@ \
+		--pkg gobject-2.0 \
+		--pkg-export genasm-0.1 \
+		$(libgenasm_la_SOURCES)
+
+BUILT_GIRSOURCES += GenAsm-0.1.gir
+
+# INTROSPECTION_GIRDIR/INTROSPECTION_TYPELIBDIR aren't the right place to
+# install anything - we need to install inside our prefix.
+girdir = $(datadir)/gir-1.0
+gir_DATA = $(BUILT_GIRSOURCES)
+
+typelibsdir = $(libdir)/girepository-1.0/
+typelibs_DATA = $(BUILT_GIRSOURCES:.gir=.typelib)
+
+%.typelib: %.gir $(INTROSPECTION_COMPILER)
+	$(QUIET_GEN)$(INTROSPECTION_COMPILER) \
+		--includedir=$(srcdir) \
+		--includedir=. \
+		$(INTROSPECTION_COMPILER_OPTS) $< -o $(builddir)/$(@F)
+
+CLEANFILES += $(BUILT_GIRSOURCES) $(typelibs_DATA)
+endif

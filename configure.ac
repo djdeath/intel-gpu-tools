@@ -115,6 +115,8 @@ AS_IF([test x"$LEX" != "x:" -a x"$YACC" != xyacc],
       [enable_assembler=no])
 AM_CONDITIONAL(BUILD_ASSEMBLER, [test "x$enable_assembler" = xyes])
 
+GOBJECT_INTROSPECTION_CHECK([0.6.8])
+
 # -----------------------------------------------------------------------------
 #			Configuration options
 # -----------------------------------------------------------------------------
