@@ -252,10 +252,10 @@ static uint32_t blob_duplicate(int fd, uint32_t id_orig)
 	plane_check_current_state(plane_old, relax); \
 }
 
-#define plane_commit_atomic(plane, req, relax) { \
+#define plane_commit_atomic(plane, req, flags, relax) {	\
 	drmModeAtomicSetCursor(req, 0); \
 	plane_populate_req(plane, req); \
-	do_atomic_commit((plane)->state->desc->fd, req, 0); \
+	do_atomic_commit((plane)->state->desc->fd, req, flags); \
 	plane_check_current_state(plane, relax); \
 }
 
@@ -886,10 +886,10 @@ static void plane_overlay(struct kms_atomic_crtc_state *crtc,
 
 	/* Enable the overlay plane using the atomic API, and double-check
 	 * state is what we think it should be. */
-	plane_commit_atomic(&plane, req, ATOMIC_RELAX_NONE);
+	plane_commit_atomic(&plane, req, 0, ATOMIC_RELAX_NONE);
 
 	/* Disable the plane and check the state matches the old. */
-	plane_commit_atomic(plane_old, req, ATOMIC_RELAX_NONE);
+	plane_commit_atomic(plane_old, req, 0, ATOMIC_RELAX_NONE);
 
 	/* Re-enable the plane through the legacy plane API, and verify through
 	 * atomic. */
@@ -983,10 +983,10 @@ static void plane_cursor(struct kms_atomic_crtc_state *crtc,
 
 	/* Flip the cursor plane using the atomic API, and double-check
 	 * state is what we think it should be. */
-	plane_commit_atomic(&plane, req, ATOMIC_RELAX_NONE);
+	plane_commit_atomic(&plane, req, 0, ATOMIC_RELAX_NONE);
 
 	/* Restore the cursor plane and check the state matches the old. */
-	plane_commit_atomic(plane_old, req, ATOMIC_RELAX_NONE);
+	plane_commit_atomic(plane_old, req, 0, ATOMIC_RELAX_NONE);
 
 	/* Re-enable the plane through the legacy cursor API, and verify
 	 * through atomic. */
@@ -1010,7 +1010,7 @@ static void plane_cursor(struct kms_atomic_crtc_state *crtc,
 	plane_check_current_state(plane_old, ATOMIC_RELAX_NONE);
 
 	/* Finally, restore to the original state. */
-	plane_commit_atomic(plane_old, req, ATOMIC_RELAX_NONE);
+	plane_commit_atomic(plane_old, req, 0, ATOMIC_RELAX_NONE);
 
 	drmModeAtomicFree(req);
 }
@@ -1043,7 +1043,7 @@ static void plane_invalid_params(struct kms_atomic_crtc_state *crtc,
 	                        ATOMIC_RELAX_NONE, EINVAL);
 
 	plane.fb_id = plane_old->fb_id;
-	plane_commit_atomic(&plane, req, ATOMIC_RELAX_NONE);
+	plane_commit_atomic(&plane, req, 0, ATOMIC_RELAX_NONE);
 
 	/* Pass a series of invalid object IDs for the CRTC ID. */
 	plane.crtc_id = plane.obj;
@@ -1063,7 +1063,7 @@ static void plane_invalid_params(struct kms_atomic_crtc_state *crtc,
 	                        ATOMIC_RELAX_NONE, EINVAL);
 
 	plane.crtc_id = plane_old->crtc_id;
-	plane_commit_atomic(&plane, req, ATOMIC_RELAX_NONE);
+	plane_commit_atomic(&plane, req, 0, ATOMIC_RELAX_NONE);
 
 	/* Create a framebuffer too small for the plane configuration. */
 	igt_require(format != 0);
@@ -1085,7 +1085,7 @@ static void plane_invalid_params(struct kms_atomic_crtc_state *crtc,
 	                        ATOMIC_RELAX_NONE, ENOSPC);
 
 	/* Restore the primary plane and check the state matches the old. */
-	plane_commit_atomic(plane_old, req, ATOMIC_RELAX_NONE);
+	plane_commit_atomic(plane_old, req, 0, ATOMIC_RELAX_NONE);
 
 	drmModeAtomicFree(req);
 }
@@ -1280,6 +1280,112 @@ static void atomic_invalid_params(struct kms_atomic_crtc_state *crtc,
 	do_ioctl_err(desc->fd, DRM_IOCTL_MODE_ATOMIC, &ioc, EFAULT);
 }
 
+static void get_events(struct kms_atomic_crtc_state *crtc,
+		       int *page_flips,
+		       int *vblank_count,
+		       int msec)
+{
+	struct kms_atomic_desc *desc = crtc->state->desc;
+	struct timeval timeout = { .tv_sec = 0, .tv_usec = msec * 1000 };
+	fd_set fds;
+	char buffer[1024];
+	int idx, len, ret;
+
+	FD_ZERO(&fds);
+	FD_SET(desc->fd, &fds);
+
+	ret = select(desc->fd + 1, &fds, NULL, NULL, &timeout);
+	if (ret < 1)
+		return;
+
+	len = read(desc->fd, buffer, sizeof(buffer));
+	if (len == 0)
+		return;
+
+	idx = 0;
+	while (idx < len) {
+		struct drm_event event;
+
+		igt_assert_lte(sizeof(event), len - idx);
+
+		memcpy(&event, &buffer[idx], sizeof(event));
+		switch (event.type) {
+		case DRM_EVENT_FLIP_COMPLETE:
+			(*page_flips)++;
+			break;
+		case DRM_EVENT_VBLANK:
+			(*vblank_count)++;
+			break;
+		default:
+			break;
+		}
+
+		idx += event.length;
+	}
+}
+
+static void plane_pageflip_events(struct kms_atomic_crtc_state *crtc,
+				  struct kms_atomic_plane_state *plane_old)
+{
+	struct drm_mode_modeinfo *mode = crtc->mode.data;
+	struct kms_atomic_plane_state plane = *plane_old;
+	uint32_t format = plane_get_igt_format(&plane);
+	drmModeAtomicReq *req = drmModeAtomicAlloc();
+	struct igt_fb fb[2];
+	int i, pageflip_count = 0, vblank_count = 0;
+	int flags = DRM_MODE_PAGE_FLIP_EVENT;
+
+	igt_require(format != 0);
+
+	for (i = 0; i < ARRAY_SIZE(fb); i++)
+		igt_create_pattern_fb(plane.state->desc->fd,
+				      plane.crtc_w, plane.crtc_h,
+				      format, I915_TILING_NONE, &fb[i]);
+
+	plane.src_x = 0;
+	plane.src_y = 0;
+	plane.src_w = mode->hdisplay << 16;
+	plane.src_h = mode->vdisplay << 16;
+	plane.crtc_x = 0;
+	plane.crtc_y = 0;
+	plane.crtc_w = mode->hdisplay;
+	plane.crtc_h = mode->vdisplay;
+	plane.crtc_id = crtc->obj;
+	plane.fb_id = fb[0].fb_id;
+
+	/* Flip the primary plane using the atomic API, and double-check
+	 * state is what we think it should be. */
+	crtc_commit_atomic(crtc, &plane, req, ATOMIC_RELAX_NONE);
+
+	get_events(crtc, &pageflip_count, &vblank_count, 0);
+	igt_assert_eq(1, pageflip_count);
+
+	drmModeAtomicFree(req);
+	req = drmModeAtomicAlloc();
+
+	/* Change the framebuffer on the plane, we should get one
+	 * pageflip event. */
+	plane.fb_id = fb[1].fb_id;
+	plane_commit_atomic(&plane, req, flags, ATOMIC_RELAX_NONE);
+	get_events(crtc, &pageflip_count, &vblank_count, 20);
+	igt_assert_eq(2, pageflip_count);
+
+	/* No change, page flip event count should remain the same. */
+	plane.fb_id = fb[1].fb_id;
+	plane_commit_atomic(&plane, req, flags, ATOMIC_RELAX_NONE);
+	get_events(crtc, &pageflip_count, &vblank_count, 20);
+	igt_assert_eq(2, pageflip_count);
+
+	/* Change back the plane's framebuffer to its original one, we
+	 * should get a page flip event. */
+	plane.fb_id = fb[0].fb_id;
+	plane_commit_atomic(&plane, req, flags, ATOMIC_RELAX_NONE);
+	get_events(crtc, &pageflip_count, &vblank_count, 20);
+	igt_assert_eq(3, pageflip_count);
+
+	drmModeAtomicFree(req);
+}
+
 igt_main
 {
 	struct kms_atomic_desc desc;
@@ -1370,6 +1476,17 @@ igt_main
 		igt_require(plane);
 		igt_require(conn);
 		atomic_invalid_params(crtc, plane, conn);
+		atomic_state_free(scratch);
+	}
+
+	igt_subtest("atomic_pageflip_events") {
+		struct kms_atomic_state *scratch = atomic_state_dup(current);
+		struct kms_atomic_crtc_state *crtc = find_crtc(scratch, true);
+		struct kms_atomic_plane_state *plane =
+			find_plane(scratch, PLANE_TYPE_PRIMARY, crtc);
+
+		igt_require(plane);
+		plane_pageflip_events(crtc, plane);
 		atomic_state_free(scratch);
 	}
 
