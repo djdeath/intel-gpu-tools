@@ -480,27 +480,18 @@ gen8_read_report_reason(const uint32_t *report)
 		return "unknown";
 }
 
-static bool
-is_periodic_report(uint32_t oa_exponent, const uint32_t *report)
+static void
+gen8_read_report_clock_ratios(uint32_t *report,
+			      uint32_t *slice_freq_mhz,
+			      uint32_t *unslice_freq_mhz)
 {
+	uint32_t unslice_freq = report[0] & 0x1ff;
+	uint32_t slice_freq_low = (report[0] >> 25) & 0x7f;
+	uint32_t slice_freq_high = (report[0] >> 9) & 0x3;
+	uint32_t slice_freq = slice_freq_low | (slice_freq_high << 7);
 
-	if (IS_HASWELL(devid)) {
-		/* For Haswell we don't have a documented report reason field
-		 * (though empirically report[0] bit 10 does seem to correlate
-		 * with a timer trigger reason) so we instead infer which
-		 * reports are timer triggered by checking if the least
-		 * significant bits are zero and the exponent bit is set.
-		 */
-		uint32_t oa_exponent_mask = (1 << (oa_exponent + 1)) - 1;
-		if ((report[1] & oa_exponent_mask) != (1 << oa_exponent))
-			return true;
-	} else {
-		if ((report[0] >> OAREPORT_REASON_SHIFT) &
-		    OAREPORT_REASON_TIMER)
-			return true;
-	}
-
-	return false;
+	*slice_freq_mhz = (slice_freq * 16666) / 1000;
+	*unslice_freq_mhz = (unslice_freq * 16666) / 1000;
 }
 
 static uint64_t
@@ -564,6 +555,55 @@ oa_report_ctx_is_valid(uint32_t *report)
 	igt_assert(!"reached");
 }
 
+static uint32_t
+oa_report_get_ctx_id(uint32_t *report)
+{
+	if (!oa_report_ctx_is_valid(report))
+		return 0xffffffff;
+	return report[2];
+}
+
+static bool
+oa_report_is_periodic(uint32_t oa_exponent, const uint32_t *report)
+{
+
+	if (IS_HASWELL(devid)) {
+		/* For Haswell we don't have a documented report reason field
+		 * (though empirically report[0] bit 10 does seem to correlate
+		 * with a timer trigger reason) so we instead infer which
+		 * reports are timer triggered by checking if the least
+		 * significant bits are zero and the exponent bit is set.
+		 */
+		uint32_t oa_exponent_mask = (1 << (oa_exponent + 1)) - 1;
+		if ((report[1] & oa_exponent_mask) != (1 << oa_exponent))
+			return true;
+	} else {
+		if ((report[0] >> OAREPORT_REASON_SHIFT) &
+		    OAREPORT_REASON_TIMER)
+			return true;
+	}
+
+	return false;
+}
+
+static bool
+oa_reports_have_clock_change(uint32_t *report0, uint32_t *report1)
+{
+	double tick_per_period;
+
+	if (intel_gen(devid) < 8)
+		return false;
+
+	/* Measure the number GPU tick delta to timestamp delta. */
+	tick_per_period =
+		(report1[3] - report0[3]) / (report1[1] - report0[1]);
+
+	if ((tick_per_period / 80.0) >= 0.97)
+		return false;
+
+	return true;
+}
+
 static void
 scratch_buf_memset(drm_intel_bo *bo, int width, int height, uint32_t color)
 {
@@ -596,6 +636,72 @@ scratch_buf_init(drm_intel_bufmgr *bufmgr,
 	buf->size = size;
 }
 
+static void
+emit_report_perf_count(struct intel_batchbuffer *batch,
+		       drm_intel_bo *dst_bo,
+		       int dst_offset,
+		       uint32_t report_id)
+{
+	if (IS_HASWELL(devid)) {
+		BEGIN_BATCH(3, 1);
+		OUT_BATCH(GEN6_MI_REPORT_PERF_COUNT);
+		OUT_RELOC(dst_bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
+			  dst_offset);
+		OUT_BATCH(report_id);
+		ADVANCE_BATCH();
+	} else {
+		/* XXX: NB: n dwords arg is actually magic since it internally
+		 * automatically accounts for larger addresses on gen >= 8...
+		 */
+		BEGIN_BATCH(3, 1);
+		OUT_BATCH(GEN8_MI_REPORT_PERF_COUNT);
+		OUT_RELOC(dst_bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
+			  dst_offset);
+		OUT_BATCH(report_id);
+		ADVANCE_BATCH();
+	}
+}
+
+static uint32_t
+i915_get_one_gpu_timestamp(void)
+{
+	drm_intel_bufmgr *bufmgr = drm_intel_bufmgr_gem_init(drm_fd, 4096);
+	drm_intel_context *mi_rpc_ctx = drm_intel_gem_context_create(bufmgr);
+	drm_intel_bo *mi_rpc_bo = drm_intel_bo_alloc(bufmgr, "mi_rpc dest bo", 4096, 64);
+	struct intel_batchbuffer *mi_rpc_batch = intel_batchbuffer_alloc(bufmgr, devid);
+	int ret;
+	uint32_t timestamp;
+
+	drm_intel_bufmgr_gem_enable_reuse(bufmgr);
+
+	igt_assert(mi_rpc_ctx);
+	igt_assert(mi_rpc_bo);
+	igt_assert(mi_rpc_batch);
+
+	ret = drm_intel_bo_map(mi_rpc_bo, true);
+	igt_assert_eq(ret, 0);
+	memset(mi_rpc_bo->virtual, 0x80, 4096);
+	drm_intel_bo_unmap(mi_rpc_bo);
+
+	emit_report_perf_count(mi_rpc_batch,
+			       mi_rpc_bo, /* dst */
+			       0, /* dst offset in bytes */
+			       0xdeadbeef); /* report ID */
+
+	intel_batchbuffer_flush_with_context(mi_rpc_batch, mi_rpc_ctx);
+
+	ret = drm_intel_bo_map(mi_rpc_bo, false /* write enable */);
+	igt_assert_eq(ret, 0);
+	timestamp = ((uint32_t *)mi_rpc_bo->virtual)[1];
+	drm_intel_bo_unmap(mi_rpc_bo);
+
+	drm_intel_bo_unreference(mi_rpc_bo);
+	intel_batchbuffer_free(mi_rpc_batch);
+	drm_intel_gem_context_destroy(mi_rpc_ctx);
+	drm_intel_bufmgr_destroy(bufmgr);
+
+	return timestamp;
+}
 
 static void
 hsw_sanity_check_render_basic_reports(uint32_t *oa_report0, uint32_t *oa_report1,
@@ -1125,7 +1231,6 @@ i915_read_reports_until_timestamp(enum drm_i915_oa_format oa_format,
 	return total_len;
 }
 
-
 /* CAP_SYS_ADMIN is required to open system wide metrics, unless the system
  * control parameter dev.i915.perf_stream_paranoid == 0 */
 static void
@@ -1388,7 +1493,7 @@ read_2_oa_reports(int format_id,
 			igt_assert_neq(report[1], 0);
 
 			if (timer_only) {
-				if (!is_periodic_report(exponent, report)) {
+				if (!oa_report_is_periodic(exponent, report)) {
 					igt_debug("skipping non timer report\n");
 					continue;
 				}
@@ -1438,20 +1543,6 @@ open_and_read_2_oa_reports(int format_id,
 			  oa_report0, oa_report1, timer_only);
 
 	__perf_close(stream_fd);
-}
-
-static void
-gen8_read_report_clock_ratios(uint32_t *report,
-			      uint32_t *slice_freq_mhz,
-			      uint32_t *unslice_freq_mhz)
-{
-	uint32_t unslice_freq = report[0] & 0x1ff;
-	uint32_t slice_freq_low = (report[0] >> 25) & 0x7f;
-	uint32_t slice_freq_high = (report[0] >> 9) & 0x3;
-	uint32_t slice_freq = slice_freq_low | (slice_freq_high << 7);
-
-	*slice_freq_mhz = (slice_freq * 16666) / 1000;
-	*unslice_freq_mhz = (unslice_freq * 16666) / 1000;
 }
 
 static void
@@ -1715,7 +1806,7 @@ static void load_helper_run(enum load load)
 			igt_assert_eq(ret, 0);
 
 			drm_intel_bo_wait_rendering(lh.dst.bo);
-			
+
 			/* Lower the load by pausing after every submitted
 			 * write. */
 			if (lh.load == LOW)
@@ -1791,8 +1882,8 @@ test_oa_exponents(void)
 	 * test can fail due to buffer overflows if it wasn't possible to
 	 * keep up, so we don't start from an exponent of zero...
 	 */
-	for (int exponent = 5; exponent < 20; exponent++) {
-		uint32_t expected_timestamp_delta;
+	for (int exponent = 5; exponent < 18; exponent++) {
+		uint64_t expected_timestamp_delta;
 		uint32_t time_delta;
 		int n_tested = 0;
 		int n_time_delta_matches = 0;
@@ -1802,7 +1893,7 @@ test_oa_exponents(void)
 		 * timestamp deltas for periodic reports to exactly match the
 		 * value of next bit.
 		 */
-		expected_timestamp_delta = 2 << exponent;
+		expected_timestamp_delta = 2UL << exponent;
 
 		for (int j = 0; n_tested < 10 && j < 100; j++) {
 			uint64_t properties[] = {
@@ -1820,90 +1911,141 @@ test_oa_exponents(void)
 				.properties_ptr = to_user_pointer(properties),
 			};
 			int ret;
-			uint64_t timestamps[50], average_timestamp_delta;
-			uint32_t n_timestamps = 0;
+			uint64_t average_timestamp_delta;
+			uint32_t n_reports = 0;
 			uint32_t n_report_lost = 0;
 			uint32_t n_idle_reports = 0;
-			//bool buffer_lost = false;
+			uint32_t n_reads = 0;
+			uint64_t first_timestamp = 0;
+			bool check_first_timestamp = true;
 			struct drm_i915_perf_record_header *header;
-			uint8_t buf[1024 * 1024];
 			uint64_t delta_delta;
 			struct {
-				uint32_t data[64];
-			} oa_reports[ARRAY_SIZE(timestamps)];
+				uint32_t report[64];
+			} reports[30];
+			struct {
+				uint8_t *buf;
+				size_t len;
+			} reads[1000];
 			double error;
 
-			igt_debug("ITER %d: testing OA exponent %d (expected ts delta = %u (%"PRIu64"ns)\n",
+			igt_debug("ITER %d: testing OA exponent %d,"
+				  " expected ts delta = %"PRIu64" (%"PRIu64"ns/%.2fus/%.2fms)\n",
 				  j, exponent,
 				  expected_timestamp_delta,
-				  oa_exponent_to_ns(exponent));
+				  oa_exponent_to_ns(exponent),
+				  oa_exponent_to_ns(exponent) / 1000.0,
+				  oa_exponent_to_ns(exponent) / (1000.0 * 1000.0));
 
 			stream_fd = __perf_open(drm_fd, &param);
 
-			//while (!buffer_lost && n_timestamps < ARRAY_SIZE(timestamps)) {
-			while (n_timestamps < ARRAY_SIZE(timestamps)) {
+			/* Right after opening the OA stream, read a
+			 * first timestamp as way to filter previously
+			 * scheduled work that would have configured
+			 * the OA unit at a different period. */
+			first_timestamp = i915_get_one_gpu_timestamp();
 
-				while ((ret = read(stream_fd, buf, sizeof(buf))) < 0 &&
+			while (n_reads < ARRAY_SIZE(reads) &&
+			       n_reports < ARRAY_SIZE(reports)) {
+				const size_t buf_size = 1024 * 1024;
+				uint8_t *buf = reads[n_reads++].buf = calloc(1, buf_size);
+
+				while ((ret = read(stream_fd, buf, buf_size)) < 0 &&
 				       errno == EINTR)
 					;
 
+				/* We should never have no data. */
+				igt_assert(ret > 0);
+				reads[n_reads - 1].len = ret;
+
+				igt_debug(" > read %i bytes\n", ret);
+
 				for (int offset = 0;
-				     offset < ret && n_timestamps < ARRAY_SIZE(timestamps);
+				     offset < ret && n_reports < ARRAY_SIZE(reports);
 				     offset += header->size) {
+					uint32_t *report;
+
 					header = (void *)(buf + offset);
 
 					if (header->type == DRM_I915_PERF_RECORD_OA_BUFFER_LOST) {
-						//buffer_lost = true;
 						igt_assert(!"reached");
 						break;
 					}
 
 					if (header->type == DRM_I915_PERF_RECORD_OA_REPORT_LOST) {
 						n_report_lost++;
+						n_reports = 0;
+						n_report_lost = 0;
+						n_idle_reports = 0;
+						for (int r = 0; r < n_reads; r++)
+							free(reads[r].buf);
+						n_reads = 0;
+						break;
 					}
 
-					if (header->type == DRM_I915_PERF_RECORD_SAMPLE) {
-						uint32_t *report = (void *)(header + 1);
+					if (header->type != DRM_I915_PERF_RECORD_SAMPLE)
+						continue;
 
-						if (is_periodic_report(exponent, report)) {
-							timestamps[n_timestamps] = report[1];
-							memcpy(oa_reports[n_timestamps].data, report, 256);
-							n_timestamps++;
+					report = (void *)(header + 1);
 
-							if (!oa_report_ctx_is_valid(report))
-								n_idle_reports++;
-						}
+					/* Skip anything before the first
+					 * timestamp, it might not be at the
+					 * right periodic exponent. */
+					if (check_first_timestamp &&
+					    report[1] < first_timestamp) {
+						igt_debug(" > Dropping ts=%u (prior %"PRIu64")\n",
+							  report[1], first_timestamp);
+						continue;
+					}
+
+					/* Once we've passed the first
+					 * timestamp, no need to check. */
+					check_first_timestamp = false;
+
+					if (!oa_report_ctx_is_valid(report))
+						n_idle_reports++;
+
+					/* We only measure timestamps between
+					 * periodic reports. */
+					if (!oa_report_is_periodic(exponent, report))
+						continue;
+
+					igt_debug(" > write %i timestamp=%u\n", n_reports, report[1]);
+					memcpy(reports[n_reports].report, report,
+					       sizeof(reports[n_reports].report));
+					n_reports++;
+
+					/* Dismiss the series of report if we
+					 * notice clock frequency changes. */
+					if (n_reports > 1 &&
+					    oa_reports_have_clock_change(reports[n_reports - 2].report,
+									 reports[n_reports - 1].report)) {
+						igt_debug("Noticed clock frequency change at ts=%u, dropping reports and trying again\n",
+							  report[1]);
+						n_reports = 0;
+						n_report_lost = 0;
+						n_idle_reports = 0;
+						for (int r = 0; r < n_reads; r++)
+							free(reads[r].buf);
+						n_reads = 0;
+						break;
 					}
 				}
 			}
 
 			close(stream_fd);
+			igt_debug("closed stream\n");
 
-			//igt_assert_eq(buffer_lost, 0);
-			//if (buffer_lost) {
-			//	igt_debug("> skipping test iteration due to buffer-lost notifications\n");
-			//	continue;
-			//}
-
-			if (n_report_lost) {
-				igt_debug(" > skipping test iteration due to report-lost notifications\n");
-				continue;
-			}
-
-			igt_assert_eq(n_timestamps, ARRAY_SIZE(timestamps));
+			igt_assert_eq(n_reports, ARRAY_SIZE(reports));
 
 			average_timestamp_delta = 0;
-			for (int i = 0; i < (n_timestamps - 1); i++) {
+			for (int i = 0; i < (n_reports - 1); i++) {
 				/* XXX: calculating with u32 arithmetic to account for overflow */
-				uint32_t u32_delta = timestamps[i + 1] - timestamps[i];
+				uint32_t u32_delta = reports[i + 1].report[1] - reports[i].report[1];
 
 				average_timestamp_delta += u32_delta;
 			}
-
-			average_timestamp_delta /= (n_timestamps - 1);
-
-
-			time_delta = timebase_scale(average_timestamp_delta);
+			average_timestamp_delta /= (n_reports - 1);
 
 			if (average_timestamp_delta > expected_timestamp_delta)
 				delta_delta  = average_timestamp_delta - expected_timestamp_delta;
@@ -1911,14 +2053,21 @@ test_oa_exponents(void)
 				delta_delta = expected_timestamp_delta - average_timestamp_delta;
 			error = (delta_delta / (double)expected_timestamp_delta) * 100.0;
 
-			igt_debug(" > Avg. time delta = %"PRIu32"(ns) lost reports = %u, n idle reports = %u, error=%f\n",
-				  time_delta, n_report_lost, n_idle_reports, error);
+			time_delta = timebase_scale(average_timestamp_delta);
+
+			igt_debug(" > Avg. time delta = %"PRIu32"(ns),"
+				  " lost reports = %u, n idle reports = %u,"
+				  " n reads = %u, error=%f\n",
+				  time_delta, n_report_lost, n_idle_reports, n_reads, error);
 			if (error > 5) {
-				igt_debug(" > More than 5%% error: avg_ts_delta = %"PRIu64", delta_delta = %"PRIu64"\n",
-					  average_timestamp_delta, delta_delta);
-				for (int i = 0; i < (n_timestamps - 1); i++) {
+				uint32_t *rpt = NULL, *last = NULL, *last_periodic = NULL;
+
+				igt_debug(" > More than 5%% error: avg_ts_delta = %"PRIu64", delta_delta = %"PRIu64", expected_delta = %"PRIu64"\n",
+					  average_timestamp_delta, delta_delta, expected_timestamp_delta);
+				for (int i = 0; i < (n_reports - 1); i++) {
 					/* XXX: calculating with u32 arithmetic to account for overflow */
-					uint32_t u32_delta = timestamps[i + 1] - timestamps[i];
+					uint32_t u32_delta =
+						reports[i + 1].report[1] - reports[i].report[1];
 
 					if (u32_delta > expected_timestamp_delta)
 						delta_delta  = u32_delta - expected_timestamp_delta;
@@ -1926,14 +2075,58 @@ test_oa_exponents(void)
 						delta_delta = expected_timestamp_delta - u32_delta;
 					error = (delta_delta / (double)expected_timestamp_delta) * 100.0;
 
-					igt_debug(" > timestamp delta from %2d to %2d = %-8u (error = %u%%)\n",
-						  i, i + 1, u32_delta, (unsigned)error);
+					igt_debug(" > ts=%u-%u timestamp delta from %2d to %2d = %-8u (error = %u%%, ctx_id = %x)\n",
+						  reports[i + 1].report[1], reports[i].report[1],
+						  i, i + 1, u32_delta, (unsigned)error,
+						  oa_report_get_ctx_id(reports[i + 1].report));
 				}
-				for (int i = 0; i < (n_timestamps - 1); i++) {
-					uint32_t *rpt0 = oa_reports[i].data;
-					uint32_t *rpt1 = oa_reports[i+1].data;
-					igt_debug("\nreport[%d] and report[%d]:\n", i, i+1);
-					print_reports(rpt0, rpt1, test_oa_format);
+				for (int r = 0; r < n_reads; r++) {
+					igt_debug(" > read\n");
+					for (int offset = 0;
+					     offset < reads[r].len;
+					     offset += header->size) {
+						int counter_print = 1;
+						uint64_t a0 = 0, aN = 0;
+						double local_period = 0;
+
+						header = (void *) &reads[r].buf[offset];
+
+						if (header->type != DRM_I915_PERF_RECORD_SAMPLE) {
+							igt_debug(" > loss\n");
+							continue;
+						}
+
+						rpt = (void *)(header + 1);
+
+						if (last) {
+							a0 = gen8_read_40bit_a_counter(rpt, test_oa_format, 0) -
+								gen8_read_40bit_a_counter(last, test_oa_format, 0);
+							aN = gen8_read_40bit_a_counter(rpt, test_oa_format, 13) -
+								gen8_read_40bit_a_counter(last, test_oa_format, 13);
+						}
+
+						if (last_periodic &&
+						    oa_report_is_periodic(exponent, rpt)) {
+							local_period =
+								((uint64_t) rpt[3] - last_periodic[3])  /
+								((uint64_t) rpt[1] - last_periodic[1]);
+						}
+
+						igt_debug(" > report ts=%u"
+							  " ts_delta_last=%8u ts_delta_last_periodic=%8u is_timer=%i ctx_id=%8x gpu_ticks=%u period=%.2f A0=%lu A%i=%lu\n",
+							  rpt[1],
+							  (last != NULL) ? (rpt[1] - last[1]) : 0,
+							  (last_periodic != NULL) ? (rpt[1] - last_periodic[1]) : 0,
+							  oa_report_is_periodic(exponent, rpt),
+							  oa_report_get_ctx_id(rpt),
+							  (last != NULL) ? (rpt[3] - last[3]) : 0,
+							  local_period,
+							  a0, counter_print, aN);
+
+						last = rpt;
+						if (oa_report_is_periodic(exponent, rpt))
+							last_periodic = rpt;
+					}
 				}
 
 				igt_assert(!"reached");
@@ -1955,6 +2148,9 @@ test_oa_exponents(void)
 			}
 
 			n_tested++;
+
+			for (int r = 0; r < n_reads; r++)
+				free(reads[r].buf);
 		}
 
 		if (n_tested < 10)
@@ -2595,7 +2791,7 @@ test_buffer_fill(void)
 					break;
 				case DRM_I915_PERF_RECORD_SAMPLE:
 					periodic_reports_count +=
-						is_periodic_report(oa_exponent, report);
+						oa_report_is_periodic(oa_exponent, report);
 					break;
 				case DRM_I915_PERF_RECORD_OA_BUFFER_LOST:
 					igt_assert(!"unexpected overflow");
@@ -2700,8 +2896,9 @@ test_enable_disable(void)
 					report_loss = true;
 					break;
 				} else if (header->type == DRM_I915_PERF_RECORD_SAMPLE) {
-					periodic_reports_count += is_periodic_report(oa_exponent,
-										     report);
+					periodic_reports_count +=
+						oa_report_is_periodic(oa_exponent,
+								      report);
 				}
 			}
 
@@ -2912,32 +3109,6 @@ test_disabled_read_error(void)
 			  false); /* not just timer reports */
 
 	__perf_close(stream_fd);
-}
-
-static void
-emit_report_perf_count(struct intel_batchbuffer *batch,
-		       drm_intel_bo *dst_bo,
-		       int dst_offset,
-		       uint32_t report_id)
-{
-	if (IS_HASWELL(devid)) {
-		BEGIN_BATCH(3, 1);
-		OUT_BATCH(GEN6_MI_REPORT_PERF_COUNT);
-		OUT_RELOC(dst_bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
-			  dst_offset);
-		OUT_BATCH(report_id);
-		ADVANCE_BATCH();
-	} else {
-		/* XXX: NB: n dwords arg is actually magic since it internally
-		 * automatically accounts for larger addresses on gen >= 8...
-		 */
-		BEGIN_BATCH(3, 1);
-		OUT_BATCH(GEN8_MI_REPORT_PERF_COUNT);
-		OUT_RELOC(dst_bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
-			  dst_offset);
-		OUT_BATCH(report_id);
-		ADVANCE_BATCH();
-	}
 }
 
 static void
