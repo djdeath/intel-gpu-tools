@@ -2721,25 +2721,29 @@ test_buffer_fill(void)
 		.num_properties = sizeof(properties) / 16,
 		.properties_ptr = to_user_pointer(properties),
 	};
+	struct drm_i915_perf_record_header *header;
 	int buf_size = 65536 * (256 + sizeof(struct drm_i915_perf_record_header));
 	uint8_t *buf = malloc(buf_size);
+	int len;
 	size_t oa_buf_size = 16 * 1024 * 1024;
 	size_t report_size = oa_formats[test_oa_format].size;
 	int n_full_oa_reports = oa_buf_size / report_size;
 	uint64_t fill_duration = n_full_oa_reports * oa_period;
+
+	load_helper_init();
+	load_helper_run(HIGH);
 
 	igt_assert(fill_duration < 1000000000);
 
 	stream_fd = __perf_open(drm_fd, &param);
 
 	for (int i = 0; i < 5; i++) {
-		struct drm_i915_perf_record_header *header;
 		bool overflow_seen;
-		int len;
-		uint32_t periodic_reports_count;
+		uint32_t n_periodic_reports;
+		uint32_t first_timestamp = 0, last_timestamp = 0;
+		uint32_t last_periodic_report[64];
 
 		do_ioctl(stream_fd, I915_PERF_IOCTL_ENABLE, 0);
-
 
 		nanosleep(&(struct timespec){ .tv_sec = 0,
 					      .tv_nsec = fill_duration * 1.25 },
@@ -2760,24 +2764,35 @@ test_buffer_fill(void)
 
 		igt_assert_eq(overflow_seen, true);
 
-		/* We want to measure only the period reports, ctx-switch might
-		 * inflate the content of the buffer and skew or measurement.
+		do_ioctl(stream_fd, I915_PERF_IOCTL_DISABLE, 0);
+
+		igt_debug("fill_duration = %luns, oa_exponent = %u\n",
+			  fill_duration, oa_exponent);
+
+		do_ioctl(stream_fd, I915_PERF_IOCTL_ENABLE, 0);
+
+		nanosleep(&(struct timespec){ .tv_sec = 0,
+					.tv_nsec = fill_duration / 2 },
+			NULL);
+
+		n_periodic_reports = 0;
+
+		/* Because all the race condition between notification of new
+		 * reports and reports landing in memory, we need to rely on
+		 * timestamps to figure whether we've read enough of them.
 		 */
-		for (bool report_loss = true; report_loss; ) {
-			do_ioctl(stream_fd, I915_PERF_IOCTL_ENABLE, 0);
+		while (((last_timestamp - first_timestamp) * oa_exponent_to_ns(oa_exponent)) <
+		       (fill_duration / 2)) {
 
-			nanosleep(&(struct timespec){ .tv_sec = 0,
-						      .tv_nsec = fill_duration / 2 },
-				NULL);
-
-			report_loss = false;
+			igt_debug("dts=%u elapsed=%lu duration=%lu\n",
+				  last_timestamp - first_timestamp,
+				  (last_timestamp - first_timestamp) * oa_exponent_to_ns(oa_exponent),
+				  fill_duration / 2);
 
 			while ((len = read(stream_fd, buf, buf_size)) == -1 && errno == EINTR)
 				;
 
 			igt_assert_neq(len, -1);
-
-			periodic_reports_count = 0;
 
 			for (int offset = 0; offset < len; offset += header->size) {
 				uint32_t *report;
@@ -2786,11 +2801,39 @@ test_buffer_fill(void)
 				report = (void *) (header + 1);
 
 				switch (header->type) {
-				case DRM_I915_PERF_RECORD_OA_REPORT_LOST :
-					report_loss = true;
+				case DRM_I915_PERF_RECORD_OA_REPORT_LOST:
+					igt_debug("report loss, trying again\n");
 					break;
 				case DRM_I915_PERF_RECORD_SAMPLE:
-					periodic_reports_count +=
+					igt_debug(" > report ts=%u"
+						  " ts_delta_last_periodic=%8u is_timer=%i ctx_id=%8x gpu_ticks=%u nb_periodic=%u\n",
+						  report[1],
+						  n_periodic_reports > 0 ? report[1] - last_periodic_report[1] : 0,
+						  oa_report_is_periodic(oa_exponent, report),
+						  oa_report_get_ctx_id(report),
+						  n_periodic_reports > 0 ? report[3] - last_periodic_report[3] : 0,
+						  n_periodic_reports);
+
+					if (first_timestamp == 0)
+						first_timestamp = report[1];
+					last_timestamp = report[1];
+
+					if (n_periodic_reports > 0 &&
+					    oa_report_is_periodic(oa_exponent, report)) {
+						if (oa_reports_have_clock_change(last_periodic_report,
+										 report))
+							igt_debug("clock change!\n");
+
+						memcpy(last_periodic_report, report,
+						       sizeof(last_periodic_report));
+					}
+
+					/* We want to measure only the periodic
+					 * reports, ctx-switch might inflate the
+					 * content of the buffer and skew or
+					 * measurement.
+					 */
+					n_periodic_reports +=
 						oa_report_is_periodic(oa_exponent, report);
 					break;
 				case DRM_I915_PERF_RECORD_OA_BUFFER_LOST:
@@ -2798,24 +2841,27 @@ test_buffer_fill(void)
 					break;
 				}
 			}
-
-			do_ioctl(stream_fd, I915_PERF_IOCTL_DISABLE, 0);
 		}
+
+		do_ioctl(stream_fd, I915_PERF_IOCTL_DISABLE, 0);
 
 		igt_debug("%f < %lu < %f\n",
 			  report_size * n_full_oa_reports * 0.45,
-			  periodic_reports_count * report_size,
+			  n_periodic_reports * report_size,
 			  report_size * n_full_oa_reports * 0.55);
 
-		igt_assert(periodic_reports_count * report_size >
+		igt_assert(n_periodic_reports * report_size >
 			   report_size * n_full_oa_reports * 0.45);
-		igt_assert(periodic_reports_count * report_size <
+		igt_assert(n_periodic_reports * report_size <
 			   report_size * n_full_oa_reports * 0.55);
 	}
 
 	free(buf);
 
 	__perf_close(stream_fd);
+
+	load_helper_stop();
+	load_helper_deinit();
 }
 
 static void
