@@ -259,12 +259,9 @@ static int device = -1;
 static int n_eus;
 
 static uint64_t test_metric_set_id = UINT64_MAX;
-static uint64_t gt_min_freq_mhz_saved = 0;
-static uint64_t gt_max_freq_mhz_saved = 0;
-static uint64_t gt_min_freq_mhz = 0;
-static uint64_t gt_max_freq_mhz = 0;
 
 static uint64_t timestamp_frequency = 12500000;
+static uint64_t gt_max_freq_mhz = 0;
 static enum drm_i915_oa_format test_oa_format;
 static bool *undefined_a_counters;
 static uint64_t oa_exp_1_millisec;
@@ -375,16 +372,6 @@ sysfs_read(const char *file)
 	snprintf(buf, sizeof(buf), "/sys/class/drm/card%d/%s", device, file);
 
 	return read_u64_file(buf);
-}
-
-static void
-sysfs_write(const char *file, uint64_t val)
-{
-	char buf[512];
-
-	snprintf(buf, sizeof(buf), "/sys/class/drm/card%d/%s", device, file);
-
-	write_u64_file(buf, val);
 }
 
 static char *
@@ -1114,66 +1101,6 @@ init_sys_info(void)
 		 test_set_uuid);
 
 	return try_read_u64_file(buf, &test_metric_set_id);
-}
-
-static void
-gt_frequency_range_save(void)
-{
-	gt_min_freq_mhz_saved = sysfs_read("gt_min_freq_mhz");
-	gt_max_freq_mhz_saved = sysfs_read("gt_boost_freq_mhz");
-
-	gt_min_freq_mhz = gt_min_freq_mhz_saved;
-	gt_max_freq_mhz = gt_max_freq_mhz_saved;
-}
-
-static void wait_freq_settle(void)
-{
-	struct timespec ts;
-
-	/* FIXME: Lazy sleep without check. */
-	ts.tv_sec = 0;
-	ts.tv_nsec = 20000;
-	clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
-}
-
-static void
-gt_frequency_pin(int gt_freq_mhz)
-{
-	igt_debug("requesting pinned GT freq = %dmhz\n", gt_freq_mhz);
-
-	if (gt_freq_mhz > gt_max_freq_mhz) {
-		sysfs_write("gt_max_freq_mhz", gt_freq_mhz);
-		sysfs_write("gt_min_freq_mhz", gt_freq_mhz);
-	} else {
-		sysfs_write("gt_min_freq_mhz", gt_freq_mhz);
-		sysfs_write("gt_max_freq_mhz", gt_freq_mhz);
-	}
-	gt_min_freq_mhz = gt_freq_mhz;
-	gt_max_freq_mhz = gt_freq_mhz;
-
-	wait_freq_settle();
-}
-
-static void
-gt_frequency_range_restore(void)
-{
-	igt_debug("restoring GT frequency range: min = %dmhz, max =%dmhz, current: min=%dmhz, max=%dmhz\n",
-		  (int)gt_min_freq_mhz_saved,
-		  (int)gt_max_freq_mhz_saved,
-		  (int)gt_min_freq_mhz,
-		  (int)gt_max_freq_mhz);
-
-	/* Assume current min/max are the same */
-	if (gt_min_freq_mhz_saved > gt_max_freq_mhz) {
-		sysfs_write("gt_max_freq_mhz", gt_max_freq_mhz_saved);
-		sysfs_write("gt_min_freq_mhz", gt_min_freq_mhz_saved);
-	} else {
-		sysfs_write("gt_min_freq_mhz", gt_min_freq_mhz_saved);
-		sysfs_write("gt_max_freq_mhz", gt_max_freq_mhz_saved);
-	}
-
-	gt_min_freq_mhz = gt_min_freq_mhz_saved;
-	gt_max_freq_mhz = gt_max_freq_mhz_saved;
 }
 
 static int
@@ -2167,8 +2094,6 @@ test_oa_exponents(void)
 		 */
 		igt_assert(n_time_delta_matches >= 9);
 	}
-
-	gt_frequency_range_restore();
 
 	load_helper_stop();
 	load_helper_deinit();
@@ -4167,10 +4092,10 @@ igt_main
 
 		igt_require(init_sys_info());
 
-		gt_frequency_range_save();
-
 		write_u64_file("/proc/sys/dev/i915/perf_stream_paranoid", 1);
 		write_u64_file("/proc/sys/dev/i915/oa_max_sample_rate", 100000);
+
+		gt_max_freq_mhz = sysfs_read("gt_boost_freq_mhz");
 
 		render_copy = igt_get_render_copyfunc(devid);
 		igt_require_f(render_copy, "no render-copy function\n");
@@ -4259,8 +4184,6 @@ igt_main
 		/* leave sysctl options in their default state... */
 		write_u64_file("/proc/sys/dev/i915/oa_max_sample_rate", 100000);
 		write_u64_file("/proc/sys/dev/i915/perf_stream_paranoid", 1);
-
-		gt_frequency_range_restore();
 
 		close(drm_fd);
 	}
