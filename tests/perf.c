@@ -3944,7 +3944,7 @@ test_rc6_disable(void)
 	n_events_start = read_debugfs_u64_record("i915_drpc_info",
 						 "RC6 residency since boot");
 
-	nanosleep(&(struct timespec){ .tv_sec = 0, .tv_nsec = 500000000 }, NULL);
+	nanosleep(&(struct timespec){ .tv_sec = 1, .tv_nsec = 0 }, NULL);
 
 	n_events_end = read_debugfs_u64_record("i915_drpc_info",
 					       "RC6 residency since boot");
