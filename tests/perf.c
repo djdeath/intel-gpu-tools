@@ -1092,6 +1092,9 @@ init_sys_info(void)
 		} else if (IS_GEMINILAKE(devid)) {
 			test_set_uuid = "dd3fd789-e783-4204-8cd0-b671bbccb0cf";
 			timestamp_frequency = 19200000;
+		} else if (IS_CANNONLAKE(devid)) {
+			test_set_uuid = "62ac0937-81a9-4fc1-83a7-d88af4a5557a";
+			timestamp_frequency = 12000000;
 		} else {
 			igt_debug("unsupported GT\n");
 			return false;
