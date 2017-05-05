@@ -569,7 +569,7 @@ oa_report_ctx_is_valid(uint32_t *report)
 		return false; /* TODO */
 	} else if (IS_GEN8(devid)) {
 		return report[0] & (1ul << 25);
-	} else if (IS_GEN9(devid)) {
+	} else if (IS_GEN9(devid) || IS_GEN10(devid)) {
 		return report[0] & (1ul << 16);
 	}
 
@@ -1094,7 +1094,7 @@ init_sys_info(void)
 			timestamp_frequency = 19200000;
 		} else if (IS_CANNONLAKE(devid)) {
 			test_set_uuid = "62ac0937-81a9-4fc1-83a7-d88af4a5557a";
-			timestamp_frequency = 12000000;
+			timestamp_frequency = 19200000;
 		} else {
 			igt_debug("unsupported GT\n");
 			return false;
