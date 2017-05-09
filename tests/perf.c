@@ -277,8 +277,8 @@ timestamp_delta_within(uint32_t delta,
 		       uint32_t expected_delta,
 		       uint32_t margin)
 {
-	return delta > (expected_delta - margin) &&
-	       delta < (expected_delta + margin);
+	return delta >= (expected_delta - margin) &&
+	       delta <= (expected_delta + margin);
 }
 
 static bool
@@ -286,8 +286,8 @@ double_value_within(double value,
 		    double expected,
 		    double percent_margin)
 {
-	return value > (expected - expected * percent_margin / 100.0) &&
-	       value < (expected + expected * percent_margin / 100.0);
+	return value >= (expected - expected * percent_margin / 100.0) &&
+	       value <= (expected + expected * percent_margin / 100.0);
 
 }
 
@@ -551,7 +551,7 @@ oa_report_is_periodic(uint32_t oa_exponent, const uint32_t *report)
 		 * significant bits are zero and the exponent bit is set.
 		 */
 		uint32_t oa_exponent_mask = (1 << (oa_exponent + 1)) - 1;
-		if ((report[1] & oa_exponent_mask) != (1 << oa_exponent))
+		if ((report[1] & oa_exponent_mask) == (1 << oa_exponent))
 			return true;
 	} else {
 		if ((report[0] >> OAREPORT_REASON_SHIFT) &
@@ -1973,9 +1973,9 @@ test_oa_exponents(void)
 						 * changes. */
 						if (!double_value_within(tick_per_period,
 									 previous_tick_per_period, 5)) {
-								igt_debug("Noticed clock frequency change at ts=%u, "
+								igt_debug("Noticed clock frequency change at ts=%u (%f / %f), "
 									  "dropping reports and trying again\n",
-									  report[1]);
+									  report[1], previous_tick_per_period, tick_per_period);
 								n_reports = 0;
 								n_report_lost = 0;
 								n_idle_reports = 0;
