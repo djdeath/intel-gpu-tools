@@ -91,6 +91,16 @@ IGT_TEST_DESCRIPTION("Test the i915 perf metrics streaming interface");
 #define DRM_I915_PERF_OPEN		0x36
 #define DRM_IOCTL_I915_PERF_OPEN	DRM_IOW(DRM_COMMAND_BASE + DRM_I915_PERF_OPEN, struct drm_i915_perf_open_param)
 
+union drm_i915_gem_param_sseu {
+	struct {
+		__u8 slice_mask;
+		__u8 subslice_mask;
+		__u8 min_eu_per_subslice;
+		__u8 max_eu_per_subslice;
+	} packed;
+	__u64 value;
+};
+
 enum drm_i915_oa_format {
 	I915_OA_FORMAT_A13 = 1,     /* HSW only */
 	I915_OA_FORMAT_A29,         /* HSW only */
@@ -130,6 +140,7 @@ struct drm_i915_perf_open_param {
 
 #define I915_PERF_IOCTL_ENABLE _IO('i', 0x0)
 #define I915_PERF_IOCTL_DISABLE	_IO('i', 0x1)
+#define I915_PERF_IOCTL_GET_SSEU _IOW('i', 0x2, union drm_i915_gem_param_sseu)
 
 struct drm_i915_perf_record_header {
        __u32 type;
@@ -1172,6 +1183,38 @@ i915_read_reports_until_timestamp(enum drm_i915_oa_format oa_format,
 	}
 
 	return total_len;
+}
+
+static void
+test_sseu_configuration(void)
+{
+	uint64_t properties[] = {
+		/* Include OA reports in samples */
+		DRM_I915_PERF_PROP_SAMPLE_OA, true,
+
+		/* OA unit configuration */
+		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
+		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
+		DRM_I915_PERF_PROP_OA_EXPONENT, oa_exp_1_millisec,
+	};
+	struct drm_i915_perf_open_param param = {
+		.flags = I915_PERF_FLAG_FD_CLOEXEC |
+		I915_PERF_FLAG_FD_NONBLOCK,
+		.num_properties = sizeof(properties) / 16,
+		.properties_ptr = to_user_pointer(properties),
+	};
+	union drm_i915_gem_param_sseu sseu_config;
+
+	stream_fd = __perf_open(drm_fd, &param);
+
+	do_ioctl(stream_fd, I915_PERF_IOCTL_GET_SSEU, &sseu_config);
+
+	igt_debug("sseu.slice_mask=0x%hhx sseu.subslice_mask=0x%hhx min_eu=%hhi max_eu=%hhi\n",
+		  sseu_config.packed.slice_mask, sseu_config.packed.subslice_mask,
+		  sseu_config.packed.min_eu_per_subslice,
+		  sseu_config.packed.max_eu_per_subslice);
+
+	__perf_close(stream_fd);
 }
 
 /* CAP_SYS_ADMIN is required to open system wide metrics, unless the system
@@ -4152,6 +4195,9 @@ igt_main
 		render_copy = igt_get_render_copyfunc(devid);
 		igt_require_f(render_copy, "no render-copy function\n");
 	}
+
+	igt_subtest("sseu-configuration")
+		test_sseu_configuration();
 
 	igt_subtest("non-system-wide-paranoid")
 		test_system_wide_paranoid();
