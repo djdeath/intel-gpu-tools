@@ -91,6 +91,16 @@ IGT_TEST_DESCRIPTION("Test the i915 perf metrics streaming interface");
 #define DRM_I915_PERF_OPEN		0x36
 #define DRM_IOCTL_I915_PERF_OPEN	DRM_IOW(DRM_COMMAND_BASE + DRM_I915_PERF_OPEN, struct drm_i915_perf_open_param)
 
+union drm_i915_gem_param_sseu {
+	struct {
+		__u8 slice_mask;
+		__u8 subslice_mask;
+		__u8 min_eu_per_subslice;
+		__u8 max_eu_per_subslice;
+	} packed;
+	__u64 value;
+};
+
 enum drm_i915_oa_format {
 	I915_OA_FORMAT_A13 = 1,     /* HSW only */
 	I915_OA_FORMAT_A29,         /* HSW only */
@@ -114,6 +124,7 @@ enum drm_i915_perf_property_id {
        DRM_I915_PERF_PROP_OA_METRICS_SET,
        DRM_I915_PERF_PROP_OA_FORMAT,
        DRM_I915_PERF_PROP_OA_EXPONENT,
+       DRM_I915_PERF_PROP_SSEU_CHANGE,
 
        DRM_I915_PERF_PROP_MAX /* non-ABI */
 };
@@ -141,8 +152,16 @@ enum drm_i915_perf_record_type {
        DRM_I915_PERF_RECORD_SAMPLE = 1,
        DRM_I915_PERF_RECORD_OA_REPORT_LOST = 2,
        DRM_I915_PERF_RECORD_OA_BUFFER_LOST = 3,
+       DRM_I915_PERF_RECORD_SSEU_CHANGE = 4,
 
        DRM_I915_PERF_RECORD_MAX /* non-ABI */
+};
+
+struct drm_i915_perf_sseu_change {
+	__u32 hw_id;
+	__u16 pad;
+	__u8 slice_mask;
+	__u8 subslice_mask;
 };
 #endif /* !DRM_I915_PERF_OPEN */
 
@@ -1678,7 +1697,9 @@ enum load {
 	HIGH
 };
 
-static struct load_helper {
+#define LOAD_HELPER_PAUSE_USEC (500)
+
+struct load_helper {
 	int devid;
 	int has_ppgtt;
 	drm_intel_bufmgr *bufmgr;
@@ -1690,133 +1711,117 @@ static struct load_helper {
 	bool exit;
 	struct igt_helper_process igt_proc;
 	struct igt_buf src, dst;
-} lh = { 0, };
+};
+static struct load_helper *local_helper;
 
 static void load_helper_signal_handler(int sig)
 {
-	if (sig == SIGUSR2)
-		lh.load = lh.load == LOW ? HIGH : LOW;
-	else
-		lh.exit = true;
+	if (sig == SIGUSR1)
+		local_helper->exit = true;
 }
 
-#define LOAD_HELPER_PAUSE_USEC 500
-#define LOAD_HELPER_BO_SIZE (16*1024*1024)
-static void load_helper_set_load(enum load load)
+static void load_helper_run(struct load_helper *lh, enum load load)
 {
-	igt_assert(lh.igt_proc.running);
+	lh->load = load;
 
-	if (lh.load == load)
-		return;
+	igt_fork_helper(&lh->igt_proc) {
+		local_helper = lh;
 
-	lh.load = load;
-	kill(lh.igt_proc.pid, SIGUSR2);
-}
-
-static void load_helper_run(enum load load)
-{
-	/*
-	 * FIXME fork helpers won't get cleaned up when started from within a
-	 * subtest, so handle the case where it sticks around a bit too long.
-	 */
-	if (lh.igt_proc.running) {
-		load_helper_set_load(load);
-		return;
-	}
-
-	lh.load = load;
-
-	igt_fork_helper(&lh.igt_proc) {
 		signal(SIGUSR1, load_helper_signal_handler);
-		signal(SIGUSR2, load_helper_signal_handler);
 
-		while (!lh.exit) {
+		while (!lh->exit) {
 			int ret;
 
-			render_copy(lh.batch,
-				    lh.context,
-				    &lh.src, 0, 0, 1920, 1080,
-				    &lh.dst, 0, 0);
+			render_copy(lh->batch,
+				    lh->context,
+				    &lh->src, 0, 0, 1920, 1080,
+				    &lh->dst, 0, 0);
 
-			intel_batchbuffer_flush_with_context(lh.batch,
-							     lh.context);
+			intel_batchbuffer_flush_with_context(lh->batch,
+							     lh->context);
 
-			ret = drm_intel_gem_context_get_id(lh.context,
-							   &lh.context_id);
+			ret = drm_intel_gem_context_get_id(lh->context,
+							   &lh->context_id);
 			igt_assert_eq(ret, 0);
 
-			drm_intel_bo_wait_rendering(lh.dst.bo);
+			drm_intel_bo_wait_rendering(lh->dst.bo);
 
 			/* Lower the load by pausing after every submitted
 			 * write. */
-			if (lh.load == LOW)
+			if (lh->load == LOW)
 				usleep(LOAD_HELPER_PAUSE_USEC);
 		}
 	}
 }
 
-static void load_helper_stop(void)
+static void load_helper_stop(struct load_helper *lh)
 {
-	kill(lh.igt_proc.pid, SIGUSR1);
-	igt_assert(igt_wait_helper(&lh.igt_proc) == 0);
+	kill(lh->igt_proc.pid, SIGUSR1);
+	igt_assert(igt_wait_helper(&lh->igt_proc) == 0);
 }
 
-static void load_helper_init(void)
+static void load_helper_init(struct load_helper *lh)
 {
 	int ret;
 
-	lh.devid = intel_get_drm_devid(drm_fd);
-	lh.has_ppgtt = gem_uses_ppgtt(drm_fd);
+	lh->devid = intel_get_drm_devid(drm_fd);
+	lh->has_ppgtt = gem_uses_ppgtt(drm_fd);
 
 	/* MI_STORE_DATA can only use GTT address on gen4+/g33 and needs
 	 * snoopable mem on pre-gen6. Hence load-helper only works on gen6+, but
 	 * that's also all we care about for the rps testcase*/
-	igt_assert(intel_gen(lh.devid) >= 6);
-	lh.bufmgr = drm_intel_bufmgr_gem_init(drm_fd, 4096);
-	igt_assert(lh.bufmgr);
+	igt_assert(intel_gen(lh->devid) >= 6);
+	lh->bufmgr = drm_intel_bufmgr_gem_init(drm_fd, 4096);
+	igt_assert(lh->bufmgr);
 
-	drm_intel_bufmgr_gem_enable_reuse(lh.bufmgr);
+	drm_intel_bufmgr_gem_enable_reuse(lh->bufmgr);
 
-	lh.context = drm_intel_gem_context_create(lh.bufmgr);
-	igt_assert(lh.context);
+	lh->context = drm_intel_gem_context_create(lh->bufmgr);
+	igt_assert(lh->context);
 
-	lh.context_id = 0xffffffff;
-	ret = drm_intel_gem_context_get_id(lh.context, &lh.context_id);
+	lh->context_id = 0xffffffff;
+	ret = drm_intel_gem_context_get_id(lh->context, &lh->context_id);
 	igt_assert_eq(ret, 0);
-	igt_assert_neq(lh.context_id, 0xffffffff);
+	igt_assert_neq(lh->context_id, 0xffffffff);
 
-	lh.batch = intel_batchbuffer_alloc(lh.bufmgr, lh.devid);
-	igt_assert(lh.batch);
+	lh->batch = intel_batchbuffer_alloc(lh->bufmgr, lh->devid);
+	igt_assert(lh->batch);
 
-	scratch_buf_init(lh.bufmgr, &lh.dst, 1920, 1080, 0);
-	scratch_buf_init(lh.bufmgr, &lh.src, 1920, 1080, 0);
+	scratch_buf_init(lh->bufmgr, &lh->dst, 1920, 1080, 0);
+	scratch_buf_init(lh->bufmgr, &lh->src, 1920, 1080, 0);
+
+
+	igt_debug("load helper %p initialized with ctx_id=%u/0x%x\n",
+		  lh, lh->context_id, lh->context_id);
 }
 
-static void load_helper_deinit(void)
+static void load_helper_deinit(struct load_helper *lh)
 {
-	if (lh.igt_proc.running)
-		load_helper_stop();
+	if (lh->igt_proc.running)
+		load_helper_stop(lh);
 
-	if (lh.src.bo)
-		drm_intel_bo_unreference(lh.src.bo);
-	if (lh.dst.bo)
-		drm_intel_bo_unreference(lh.dst.bo);
+	if (lh->src.bo)
+		drm_intel_bo_unreference(lh->src.bo);
+	if (lh->dst.bo)
+		drm_intel_bo_unreference(lh->dst.bo);
 
-	if (lh.batch)
-		intel_batchbuffer_free(lh.batch);
+	if (lh->batch)
+		intel_batchbuffer_free(lh->batch);
 
-	if (lh.context)
-		drm_intel_gem_context_destroy(lh.context);
+	if (lh->context)
+		drm_intel_gem_context_destroy(lh->context);
 
-	if (lh.bufmgr)
-		drm_intel_bufmgr_destroy(lh.bufmgr);
+	if (lh->bufmgr)
+		drm_intel_bufmgr_destroy(lh->bufmgr);
 }
 
 static void
 test_oa_exponents(void)
 {
-	load_helper_init();
-	load_helper_run(HIGH);
+	struct load_helper lh = { 0, };
+
+	load_helper_init(&lh);
+	load_helper_run(&lh, HIGH);
 
 	/* It's asking a lot to sample with a 160 nanosecond period and the
 	 * test can fail due to buffer overflows if it wasn't possible to
@@ -2121,8 +2126,8 @@ test_oa_exponents(void)
 		igt_assert(n_time_delta_matches >= 9);
 	}
 
-	load_helper_stop();
-	load_helper_deinit();
+	load_helper_stop(&lh);
+	load_helper_deinit(&lh);
 }
 
 /* The OA exponent selects a timestamp counter bit to trigger reports on.
@@ -2674,9 +2679,10 @@ test_buffer_fill(void)
 	size_t report_size = oa_formats[test_oa_format].size;
 	int n_full_oa_reports = oa_buf_size / report_size;
 	uint64_t fill_duration = n_full_oa_reports * oa_period;
+	struct load_helper lh = { 0, };
 
-	load_helper_init();
-	load_helper_run(HIGH);
+	load_helper_init(&lh);
+	load_helper_run(&lh, HIGH);
 
 	igt_assert(fill_duration < 1000000000);
 
@@ -2813,8 +2819,8 @@ test_buffer_fill(void)
 
 	__perf_close(stream_fd);
 
-	load_helper_stop();
-	load_helper_deinit();
+	load_helper_stop(&lh);
+	load_helper_deinit(&lh);
 }
 
 static void
@@ -2844,9 +2850,10 @@ test_enable_disable(void)
 	size_t report_size = oa_formats[test_oa_format].size;
 	int n_full_oa_reports = oa_buf_size / report_size;
 	uint64_t fill_duration = n_full_oa_reports * oa_period;
+	struct load_helper lh = { 0, };
 
-	load_helper_init();
-	load_helper_run(HIGH);
+	load_helper_init(&lh);
+	load_helper_run(&lh, HIGH);
 
 	stream_fd = __perf_open(drm_fd, &param);
 
@@ -2974,8 +2981,8 @@ test_enable_disable(void)
 
 	__perf_close(stream_fd);
 
-	load_helper_stop();
-	load_helper_deinit();
+	load_helper_stop(&lh);
+	load_helper_deinit(&lh);
 }
 
 static void
@@ -3944,6 +3951,217 @@ gen8_test_single_ctx_render_target_writes_a_counter(void)
 	} while (WEXITSTATUS(child_ret) == EAGAIN);
 }
 
+static void
+test_dynamic_sseu(void)
+{
+	/* ~5 micro second period */
+	int oa_exponent = max_oa_exponent_for_period_lte(5000);
+	uint64_t oa_period = oa_exponent_to_ns(oa_exponent);
+	uint64_t properties[] = {
+		/* Include OA reports in samples */
+		DRM_I915_PERF_PROP_SAMPLE_OA, true,
+
+		/* OA unit configuration */
+		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
+		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
+		DRM_I915_PERF_PROP_OA_EXPONENT, oa_exponent,
+		DRM_I915_PERF_PROP_SSEU_CHANGE, true,
+	};
+	struct drm_i915_perf_open_param param = {
+		.flags = I915_PERF_FLAG_FD_CLOEXEC |
+			 I915_PERF_FLAG_DISABLED, /* Verify we start disabled */
+		.num_properties = sizeof(properties) / 16,
+		.properties_ptr = to_user_pointer(properties),
+	};
+	int buf_size = 65536 * (256 + sizeof(struct drm_i915_perf_record_header));
+	uint8_t *buf = malloc(buf_size);
+	size_t oa_buf_size = 16 * 1024 * 1024;
+	size_t report_size = oa_formats[test_oa_format].size;
+	int n_full_oa_reports = oa_buf_size / report_size;
+	uint64_t fill_duration = n_full_oa_reports * oa_period;
+	struct load_helper lh_full_slice = { 0, }, lh_half_slice = { 0, };
+	struct drm_i915_perf_sseu_change *ctx_to_sseu;
+	uint32_t n_ctx_to_sseu;
+	uint32_t ctx_to_sseu_length = 0;
+
+	load_helper_init(&lh_full_slice);
+	load_helper_run(&lh_full_slice, HIGH);
+
+	load_helper_init(&lh_half_slice);
+	load_helper_run(&lh_half_slice, HIGH);
+
+	stream_fd = __perf_open(drm_fd, &param);
+
+	for (int i = 0; i < 5; i++) {
+		int len;
+		uint32_t n_periodic_reports, n_reports;
+		struct drm_i915_perf_record_header *header;
+		uint32_t first_timestamp = 0, last_timestamp = 0;
+		uint32_t user_timestamp;
+		uint32_t last_report[64];
+		uint32_t last_periodic_report[64];
+
+		/* Giving enough time for an overflow might help catch whether
+		 * the OA unit has been enabled even if the driver might at
+		 * least avoid copying reports while disabled.
+		 */
+		nanosleep(&(struct timespec){ .tv_sec = 0,
+					      .tv_nsec = fill_duration * 1.25 },
+			  NULL);
+
+		while ((len = read(stream_fd, buf, buf_size)) == -1 && errno == EINTR)
+			;
+
+		igt_assert_eq(len, -1);
+		igt_assert_eq(errno, EIO);
+
+		do_ioctl(stream_fd, I915_PERF_IOCTL_ENABLE, 0);
+
+		user_timestamp = i915_get_one_gpu_timestamp(NULL);
+
+		igt_debug(" > user timestamp = %u\n", user_timestamp);
+
+		nanosleep(&(struct timespec){ .tv_sec = 0,
+					      .tv_nsec = fill_duration / 2 },
+			NULL);
+
+		n_reports = n_periodic_reports = 0;
+		n_ctx_to_sseu = 0;
+
+		/* Because of the race condition between notification of new
+		 * reports and reports landing in memory, we need to rely on
+		 * timestamps to figure whether we've read enough of them.
+		 */
+		while (((last_timestamp - first_timestamp) * oa_exponent_to_ns(oa_exponent)) <
+		       (fill_duration / 2)) {
+
+			while ((len = read(stream_fd, buf, buf_size)) == -1 && errno == EINTR)
+				;
+
+			igt_assert_neq(len, -1);
+
+			for (int offset = 0; offset < len; offset += header->size) {
+				uint32_t *report;
+
+				header = (void *) (buf + offset);
+				report = (void *) (header + 1);
+
+				switch (header->type) {
+				case DRM_I915_PERF_RECORD_OA_REPORT_LOST:
+					break;
+				case DRM_I915_PERF_RECORD_SAMPLE: {
+					if (first_timestamp == 0)
+						first_timestamp = report[1];
+					last_timestamp = report[1];
+
+					if (n_reports > 1) {
+						igt_debug(" > report ts=%u"
+							  " ts_delta_last_periodic=%8u is_timer=%i ctx_id=0x%8x gpu_ticks=%u nb_periodic=%u\n",
+							  report[1],
+							  report[1] - last_periodic_report[1],
+							  oa_report_is_periodic(oa_exponent, report),
+							  oa_report_get_ctx_id(report),
+							  report[3] - last_periodic_report[3],
+							  n_periodic_reports/* , */
+							  /* gen8_read_40bit_a_counter(report, test_oa_format, 0) - */
+							  /* gen8_read_40bit_a_counter(last_report, test_oa_format, 0) */);
+					}
+
+					if (oa_report_is_periodic(oa_exponent, report)) {
+						/* if (n_periodic_reports > 1) */
+						/*	sanity_check_reports(last_periodic_report, report, test_oa_format); */
+
+						memcpy(last_periodic_report, report,
+						       sizeof(last_periodic_report));
+						n_periodic_reports++;
+					}
+
+					memcpy(last_report, report, sizeof(last_report));
+					n_reports++;
+
+					if (last_timestamp >= user_timestamp) {
+						uint32_t ctx_id = oa_report_get_ctx_id(report);
+						bool found = false;
+
+						if (ctx_id == 0xffffffff)
+							break;
+
+						for (int j = 0; j < n_ctx_to_sseu; j++) {
+							if (ctx_to_sseu[j].hw_id == ctx_id) {
+								found = true;
+								break;
+							}
+						}
+
+						igt_assert(found);
+					}
+
+					break;
+				}
+				case DRM_I915_PERF_RECORD_OA_BUFFER_LOST:
+					igt_assert(!"unexpected overflow");
+					break;
+				case DRM_I915_PERF_RECORD_SSEU_CHANGE: {
+					struct drm_i915_perf_sseu_change *change =
+						(struct drm_i915_perf_sseu_change *) (header + 1);
+
+					if (ctx_to_sseu_length == 0) {
+						ctx_to_sseu_length = 2;
+						ctx_to_sseu = malloc(ctx_to_sseu_length * sizeof(*ctx_to_sseu));
+					} else if (n_ctx_to_sseu == ctx_to_sseu_length) {
+						ctx_to_sseu_length *= 2;
+						ctx_to_sseu = realloc(ctx_to_sseu,
+								      ctx_to_sseu_length * sizeof(*ctx_to_sseu));
+					}
+
+					ctx_to_sseu[n_ctx_to_sseu++] = *change;
+
+					igt_debug(" > sseu change hw_id=%u/0x%x slice_mask=0x%x subslice_mask=0x%x\n",
+						  change->hw_id, change->hw_id,
+						  change->slice_mask,
+						  change->subslice_mask);
+					break;
+				}
+				}
+			}
+
+		}
+
+		do_ioctl(stream_fd, I915_PERF_IOCTL_DISABLE, 0);
+
+		igt_debug("%f < %lu < %f\n",
+			  report_size * n_full_oa_reports * 0.45,
+			  n_periodic_reports * report_size,
+			  report_size * n_full_oa_reports * 0.55);
+
+		igt_assert((n_periodic_reports * report_size) >
+			   (report_size * n_full_oa_reports * 0.45));
+		igt_assert((n_periodic_reports * report_size) <
+			   report_size * n_full_oa_reports * 0.55);
+
+
+		/* It's considered an error to read a stream while it's disabled
+		 * since it would block indefinitely...
+		 */
+		len = read(stream_fd, buf, buf_size);
+
+		igt_assert_eq(len, -1);
+		igt_assert_eq(errno, EIO);
+	}
+
+	if (ctx_to_sseu)
+		free(ctx_to_sseu);
+	free(buf);
+
+	__perf_close(stream_fd);
+
+	load_helper_stop(&lh_full_slice);
+	load_helper_deinit(&lh_full_slice);
+
+	load_helper_stop(&lh_half_slice);
+	load_helper_deinit(&lh_half_slice);
+}
+
 static bool
 rc6_enabled(void)
 {
@@ -4219,6 +4437,9 @@ igt_main
 		igt_require(intel_gen(devid) >= 8);
 		gen8_test_single_ctx_render_target_writes_a_counter();
 	}
+
+	igt_subtest("dynamic-sseu")
+		test_dynamic_sseu();
 
 	igt_subtest("rc6-disable")
 		test_rc6_disable();
