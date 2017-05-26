@@ -81,6 +81,9 @@ IGT_TEST_DESCRIPTION("Test the i915 perf metrics streaming interface");
 #define PIPE_CONTROL_PPGTT_WRITE	(0 << 2)
 #define PIPE_CONTROL_GLOBAL_GTT_WRITE   (1 << 2)
 
+#define I915_CONTEXT_PARAM_SSEU		0x6
+#define I915_CONTEXT_PARAM_HW_ID	0x7
+
 /* Temporarily copy i915-perf uapi here to avoid a dependency on libdrm's
  * i915_drm.h copy being updated with the i915-perf interface before this
  * test can land in i-g-t.
@@ -1706,6 +1709,7 @@ struct load_helper {
 	drm_intel_bufmgr *bufmgr;
 	drm_intel_context *context;
 	uint32_t context_id;
+	uint32_t hw_context_id;
 	struct intel_batchbuffer *batch;
 	drm_intel_bo *target_buffer;
 	enum load load;
@@ -1764,6 +1768,7 @@ static void load_helper_stop(struct load_helper *lh)
 static void load_helper_init(struct load_helper *lh)
 {
 	int ret;
+	struct local_i915_gem_context_param p;
 
 	lh->devid = intel_get_drm_devid(drm_fd);
 	lh->has_ppgtt = gem_uses_ppgtt(drm_fd);
@@ -1785,6 +1790,13 @@ static void load_helper_init(struct load_helper *lh)
 	igt_assert_eq(ret, 0);
 	igt_assert_neq(lh->context_id, 0xffffffff);
 
+	memset(&p, 0, sizeof(p));
+	p.context = lh->context_id;
+	p.param = I915_CONTEXT_PARAM_HW_ID;
+	igt_assert(__gem_context_get_param(drm_fd, &p) == 0);
+
+	lh->hw_context_id = p.value;
+
 	lh->batch = intel_batchbuffer_alloc(lh->bufmgr, lh->devid);
 	igt_assert(lh->batch);
 
@@ -1792,8 +1804,9 @@ static void load_helper_init(struct load_helper *lh)
 	scratch_buf_init(lh->bufmgr, &lh->src, 1920, 1080, 0);
 
 
-	igt_debug("load helper %p initialized with ctx_id=%u/0x%x\n",
-		  lh, lh->context_id, lh->context_id);
+	igt_debug("load helper %p initialized with ctx_id=%u/0x%x hw_ctx_id=%u/0x%x\n",
+		  lh, lh->context_id, lh->context_id,
+		  lh->hw_context_id, lh->hw_context_id);
 }
 
 static void load_helper_deinit(struct load_helper *lh)
