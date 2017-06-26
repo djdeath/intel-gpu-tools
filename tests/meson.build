@@ -208,6 +208,7 @@ test_progs = [
 	'prime_self_import',
 	'prime_udl',
 	'prime_vgem',
+        'query_info',
 	'sw_sync',
 	'syncobj_basic',
 	'syncobj_wait',
