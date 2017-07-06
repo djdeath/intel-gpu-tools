@@ -853,8 +853,8 @@ gen8_40bit_a_delta(uint64_t value0, uint64_t value1)
 static void
 accumulate_uint32(size_t offset,
 		  uint32_t *report0,
-                  uint32_t *report1,
-                  uint64_t *delta)
+		  uint32_t *report1,
+		  uint64_t *delta)
 {
 	uint32_t value0 = *(uint32_t *)(((uint8_t *)report0) + offset);
 	uint32_t value1 = *(uint32_t *)(((uint8_t *)report1) + offset);
@@ -864,10 +864,10 @@ accumulate_uint32(size_t offset,
 
 static void
 accumulate_uint40(int a_index,
-                  uint32_t *report0,
-                  uint32_t *report1,
+		  uint32_t *report0,
+		  uint32_t *report1,
 		  enum drm_i915_oa_format format,
-                  uint64_t *delta)
+		  uint64_t *delta)
 {
 	uint64_t value0 = gen8_read_40bit_a_counter(report0, format, a_index),
 		 value1 = gen8_read_40bit_a_counter(report1, format, a_index);
@@ -1724,6 +1724,11 @@ enum load {
 	HIGH
 };
 
+enum subslices {
+	HALF_SUBSLICES,
+	FULL_SUBSLICES
+};
+
 #define LOAD_HELPER_PAUSE_USEC (500)
 
 struct load_helper {
@@ -1738,6 +1743,8 @@ struct load_helper {
 	bool exit;
 	struct igt_helper_process igt_proc;
 	struct igt_buf src, dst;
+
+	uint32_t width, height;
 };
 static struct load_helper *local_helper;
 
@@ -1761,7 +1768,7 @@ static void load_helper_run(struct load_helper *lh, enum load load)
 
 			render_copy(lh->batch,
 				    lh->context,
-				    &lh->src, 0, 0, 1920, 1080,
+				    &lh->src, 0, 0, lh->width, lh->height,
 				    &lh->dst, 0, 0);
 
 			intel_batchbuffer_flush_with_context(lh->batch,
@@ -1787,9 +1794,14 @@ static void load_helper_stop(struct load_helper *lh)
 	igt_assert(igt_wait_helper(&lh->igt_proc) == 0);
 }
 
-static void load_helper_init(struct load_helper *lh)
+static void load_helper_init(struct load_helper *lh, enum subslices subslices)
 {
 	int ret;
+	struct drm_i915_gem_context_param arg;
+	union drm_i915_gem_context_param_sseu *sseu;
+
+	lh->width = 1920 * 2;
+	lh->height = 1080 * 2;
 
 	lh->devid = intel_get_drm_devid(drm_fd);
 	lh->has_ppgtt = gem_uses_ppgtt(drm_fd);
@@ -1814,12 +1826,28 @@ static void load_helper_init(struct load_helper *lh)
 	lh->batch = intel_batchbuffer_alloc(lh->bufmgr, lh->devid);
 	igt_assert(lh->batch);
 
-	scratch_buf_init(lh->bufmgr, &lh->dst, 1920, 1080, 0);
-	scratch_buf_init(lh->bufmgr, &lh->src, 1920, 1080, 0);
+	scratch_buf_init(lh->bufmgr, &lh->dst, lh->width, lh->height, 0);
+	scratch_buf_init(lh->bufmgr, &lh->src, lh->width, lh->height, 0);
 
+	memset(&arg, 0, sizeof(arg));
+	arg.ctx_id = lh->context_id;
+	arg.param = I915_CONTEXT_PARAM_SSEU;
+	sseu = (union drm_i915_gem_context_param_sseu *) &arg.value;
 
-	igt_debug("load helper %p initialized with ctx_id=%u/0x%x\n",
-		  lh, lh->context_id, lh->context_id);
+	if (drmIoctl(drm_fd, DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM, &arg) == 0) {
+
+		if (subslices == HALF_SUBSLICES) {
+			/* Turn off even slices */
+			for (unsigned i = 0; i < 8; i += 2)
+				sseu->packed.slice_mask &= ~(1U << i);
+
+			drmIoctl(drm_fd, DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM, &arg);
+		}
+	}
+
+	igt_debug("load helper %p initialized with ctx_id=%u/0x%x slice=%hhx subslice=%hhx\n",
+		  lh, lh->context_id, lh->context_id,
+		  sseu->packed.slice_mask, sseu->packed.subslice_mask);
 }
 
 static void load_helper_deinit(struct load_helper *lh)
@@ -1847,7 +1875,7 @@ test_oa_exponents(void)
 {
 	struct load_helper lh = { 0, };
 
-	load_helper_init(&lh);
+	load_helper_init(&lh, FULL_SUBSLICES);
 	load_helper_run(&lh, HIGH);
 
 	/* It's asking a lot to sample with a 160 nanosecond period and the
@@ -2708,7 +2736,7 @@ test_buffer_fill(void)
 	uint64_t fill_duration = n_full_oa_reports * oa_period;
 	struct load_helper lh = { 0, };
 
-	load_helper_init(&lh);
+	load_helper_init(&lh, FULL_SUBSLICES);
 	load_helper_run(&lh, HIGH);
 
 	igt_assert(fill_duration < 1000000000);
@@ -2879,7 +2907,7 @@ test_enable_disable(void)
 	uint64_t fill_duration = n_full_oa_reports * oa_period;
 	struct load_helper lh = { 0, };
 
-	load_helper_init(&lh);
+	load_helper_init(&lh, FULL_SUBSLICES);
 	load_helper_run(&lh, HIGH);
 
 	stream_fd = __perf_open(drm_fd, &param);
@@ -4007,17 +4035,14 @@ test_dynamic_sseu(void)
 	int n_full_oa_reports = oa_buf_size / report_size;
 	uint64_t fill_duration = n_full_oa_reports * oa_period;
 	struct load_helper lh_full_slice = { 0, }, lh_half_slice = { 0, };
-	struct drm_i915_perf_sseu_change *ctx_to_sseu;
+	struct drm_i915_perf_sseu_change *ctx_to_sseu = NULL;
 	uint32_t n_ctx_to_sseu;
 	uint32_t ctx_to_sseu_length = 0;
 
-	load_helper_init(&lh_full_slice);
+	load_helper_init(&lh_full_slice, FULL_SUBSLICES);
 	load_helper_run(&lh_full_slice, HIGH);
 
-	load_helper_init(&lh_half_slice);
-	load_helper_run(&lh_half_slice, HIGH);
-
-	stream_fd = __perf_open(drm_fd, &param);
+	/* stream_fd = __perf_open(drm_fd, &param); */
 
 	for (int i = 0; i < 5; i++) {
 		int len;
@@ -4028,152 +4053,172 @@ test_dynamic_sseu(void)
 		uint32_t last_report[64];
 		uint32_t last_periodic_report[64];
 
-		/* Giving enough time for an overflow might help catch whether
-		 * the OA unit has been enabled even if the driver might at
-		 * least avoid copying reports while disabled.
-		 */
-		nanosleep(&(struct timespec){ .tv_sec = 0,
-					      .tv_nsec = fill_duration * 1.25 },
-			  NULL);
+		if (i % 2) {
+			load_helper_stop(&lh_full_slice);
+			load_helper_deinit(&lh_full_slice);
 
-		while ((len = read(stream_fd, buf, buf_size)) == -1 && errno == EINTR)
-			;
-
-		igt_assert_eq(len, -1);
-		igt_assert_eq(errno, EIO);
-
-		do_ioctl(stream_fd, I915_PERF_IOCTL_ENABLE, 0);
-
-		user_timestamp = i915_get_one_gpu_timestamp(NULL);
-
-		igt_debug(" > user timestamp = %u\n", user_timestamp);
-
-		nanosleep(&(struct timespec){ .tv_sec = 0,
-					      .tv_nsec = fill_duration / 2 },
-			NULL);
-
-		n_reports = n_periodic_reports = 0;
-		n_ctx_to_sseu = 0;
-
-		/* Because of the race condition between notification of new
-		 * reports and reports landing in memory, we need to rely on
-		 * timestamps to figure whether we've read enough of them.
-		 */
-		while (((last_timestamp - first_timestamp) * oa_exponent_to_ns(oa_exponent)) <
-		       (fill_duration / 2)) {
-
-			while ((len = read(stream_fd, buf, buf_size)) == -1 && errno == EINTR)
-				;
-
-			igt_assert_neq(len, -1);
-
-			for (int offset = 0; offset < len; offset += header->size) {
-				uint32_t *report;
-
-				header = (void *) (buf + offset);
-				report = (void *) (header + 1);
-
-				switch (header->type) {
-				case DRM_I915_PERF_RECORD_OA_REPORT_LOST:
-					break;
-				case DRM_I915_PERF_RECORD_SAMPLE: {
-					if (first_timestamp == 0)
-						first_timestamp = report[1];
-					last_timestamp = report[1];
-
-					if (n_reports > 1) {
-						igt_debug(" > report ts=%u"
-							  " ts_delta_last_periodic=%8u is_timer=%i ctx_id=0x%8x gpu_ticks=%u nb_periodic=%u\n",
-							  report[1],
-							  report[1] - last_periodic_report[1],
-							  oa_report_is_periodic(oa_exponent, report),
-							  oa_report_get_ctx_id(report),
-							  report[3] - last_periodic_report[3],
-							  n_periodic_reports/* , */
-							  /* gen8_read_40bit_a_counter(report, test_oa_format, 0) - */
-							  /* gen8_read_40bit_a_counter(last_report, test_oa_format, 0) */);
-					}
-
-					if (oa_report_is_periodic(oa_exponent, report)) {
-						/* if (n_periodic_reports > 1) */
-						/*	sanity_check_reports(last_periodic_report, report, test_oa_format); */
-
-						memcpy(last_periodic_report, report,
-						       sizeof(last_periodic_report));
-						n_periodic_reports++;
-					}
-
-					memcpy(last_report, report, sizeof(last_report));
-					n_reports++;
-
-					if (last_timestamp >= user_timestamp) {
-						uint32_t ctx_id = oa_report_get_ctx_id(report);
-						bool found = false;
-
-						if (ctx_id == 0xffffffff)
-							break;
-
-						for (int j = 0; j < n_ctx_to_sseu; j++) {
-							if (ctx_to_sseu[j].hw_id == ctx_id) {
-								found = true;
-								break;
-							}
-						}
-
-						igt_assert(found);
-					}
-
-					break;
-				}
-				case DRM_I915_PERF_RECORD_OA_BUFFER_LOST:
-					igt_assert(!"unexpected overflow");
-					break;
-				case DRM_I915_PERF_RECORD_SSEU_CHANGE: {
-					struct drm_i915_perf_sseu_change *change =
-						(struct drm_i915_perf_sseu_change *) (header + 1);
-
-					if (ctx_to_sseu_length == 0) {
-						ctx_to_sseu_length = 2;
-						ctx_to_sseu = malloc(ctx_to_sseu_length * sizeof(*ctx_to_sseu));
-					} else if (n_ctx_to_sseu == ctx_to_sseu_length) {
-						ctx_to_sseu_length *= 2;
-						ctx_to_sseu = realloc(ctx_to_sseu,
-								      ctx_to_sseu_length * sizeof(*ctx_to_sseu));
-					}
-
-					ctx_to_sseu[n_ctx_to_sseu++] = *change;
-
-					igt_debug(" > sseu change hw_id=%u/0x%x slice_mask=0x%x subslice_mask=0x%x\n",
-						  change->hw_id, change->hw_id,
-						  change->slice_mask,
-						  change->subslice_mask);
-					break;
-				}
-				}
-			}
-
+			load_helper_init(&lh_half_slice, HALF_SUBSLICES);
+			load_helper_run(&lh_half_slice, HIGH);
 		}
 
-		do_ioctl(stream_fd, I915_PERF_IOCTL_DISABLE, 0);
-
-		igt_debug("%f < %lu < %f\n",
-			  report_size * n_full_oa_reports * 0.45,
-			  n_periodic_reports * report_size,
-			  report_size * n_full_oa_reports * 0.55);
-
-		igt_assert((n_periodic_reports * report_size) >
-			   (report_size * n_full_oa_reports * 0.45));
-		igt_assert((n_periodic_reports * report_size) <
-			   report_size * n_full_oa_reports * 0.55);
+		igt_debug("ITER %i\n", i);
 
 
-		/* It's considered an error to read a stream while it's disabled
-		 * since it would block indefinitely...
-		 */
-		len = read(stream_fd, buf, buf_size);
+		/* /\* Giving enough time for an overflow might help catch whether */
+		/*  * the OA unit has been enabled even if the driver might at */
+		/*  * least avoid copying reports while disabled. */
+		/*  *\/ */
+		/* nanosleep(&(struct timespec){ .tv_sec = 0, */
+		/*			      .tv_nsec = fill_duration * 1.25 }, */
+		/*	  NULL); */
 
-		igt_assert_eq(len, -1);
-		igt_assert_eq(errno, EIO);
+		/* while ((len = read(stream_fd, buf, buf_size)) == -1 && errno == EINTR) */
+		/*	; */
+
+		/* igt_assert_eq(len, -1); */
+		/* igt_assert_eq(errno, EIO); */
+
+		/* do_ioctl(stream_fd, I915_PERF_IOCTL_ENABLE, 0); */
+
+		/* user_timestamp = i915_get_one_gpu_timestamp(NULL); */
+
+		/* igt_debug(" > user timestamp = %u\n", user_timestamp); */
+
+		/* nanosleep(&(struct timespec){ .tv_sec = 0, */
+		/*			      .tv_nsec = fill_duration / 2 }, */
+		/*	NULL); */
+
+		/* n_reports = n_periodic_reports = 0; */
+		/* n_ctx_to_sseu = 0; */
+
+		/* /\* Because of the race condition between notification of new */
+		/*  * reports and reports landing in memory, we need to rely on */
+		/*  * timestamps to figure whether we've read enough of them. */
+		/*  *\/ */
+		/* while (((last_timestamp - first_timestamp) * oa_exponent_to_ns(oa_exponent)) < */
+		/*        (fill_duration / 2)) { */
+
+		/*	while ((len = read(stream_fd, buf, buf_size)) == -1 && errno == EINTR) */
+		/*		; */
+
+		/*	igt_assert_neq(len, -1); */
+
+		/*	for (int offset = 0; offset < len; offset += header->size) { */
+		/*		uint32_t *report; */
+
+		/*		header = (void *) (buf + offset); */
+		/*		report = (void *) (header + 1); */
+
+		/*		switch (header->type) { */
+		/*		case DRM_I915_PERF_RECORD_OA_REPORT_LOST: */
+		/*			break; */
+		/*		case DRM_I915_PERF_RECORD_SAMPLE: { */
+		/*			if (first_timestamp == 0) */
+		/*				first_timestamp = report[1]; */
+		/*			last_timestamp = report[1]; */
+
+		/*			if (n_reports > 1) { */
+		/*				igt_debug(" > report ts=%u" */
+		/*					  " ts_delta_last_periodic=%8u is_timer=%i ctx_id=0x%8x gpu_ticks=%u nb_periodic=%u\n", */
+		/*					  report[1], */
+		/*					  report[1] - last_periodic_report[1], */
+		/*					  oa_report_is_periodic(oa_exponent, report), */
+		/*					  oa_report_get_ctx_id(report), */
+		/*					  report[3] - last_periodic_report[3], */
+		/*					  n_periodic_reports/\* , *\/ */
+		/*					  /\* gen8_read_40bit_a_counter(report, test_oa_format, 0) - *\/ */
+		/*					  /\* gen8_read_40bit_a_counter(last_report, test_oa_format, 0) *\/); */
+		/*			} */
+
+		/*			if (oa_report_is_periodic(oa_exponent, report)) { */
+		/*				/\* if (n_periodic_reports > 1) *\/ */
+		/*				/\*	sanity_check_reports(last_periodic_report, report, test_oa_format); *\/ */
+
+		/*				memcpy(last_periodic_report, report, */
+		/*				       sizeof(last_periodic_report)); */
+		/*				n_periodic_reports++; */
+		/*			} */
+
+		/*			memcpy(last_report, report, sizeof(last_report)); */
+		/*			n_reports++; */
+
+		/*			if (last_timestamp >= user_timestamp) { */
+		/*				uint32_t ctx_id = oa_report_get_ctx_id(report); */
+		/*				bool found = false; */
+
+		/*				if (ctx_id == 0xffffffff) */
+		/*					break; */
+
+		/*				for (int j = 0; j < n_ctx_to_sseu; j++) { */
+		/*					if (ctx_to_sseu[j].hw_id == ctx_id) { */
+		/*						found = true; */
+		/*						break; */
+		/*					} */
+		/*				} */
+
+		/*				igt_assert(found); */
+		/*			} */
+
+		/*			break; */
+		/*		} */
+		/*		case DRM_I915_PERF_RECORD_OA_BUFFER_LOST: */
+		/*			igt_assert(!"unexpected overflow"); */
+		/*			break; */
+		/*		case DRM_I915_PERF_RECORD_SSEU_CHANGE: { */
+		/*			struct drm_i915_perf_sseu_change *change = */
+		/*				(struct drm_i915_perf_sseu_change *) (header + 1); */
+
+		/*			if (ctx_to_sseu_length == 0) { */
+		/*				ctx_to_sseu_length = 2; */
+		/*				ctx_to_sseu = malloc(ctx_to_sseu_length * sizeof(*ctx_to_sseu)); */
+		/*			} else if (n_ctx_to_sseu == ctx_to_sseu_length) { */
+		/*				ctx_to_sseu_length *= 2; */
+		/*				ctx_to_sseu = realloc(ctx_to_sseu, */
+		/*						      ctx_to_sseu_length * sizeof(*ctx_to_sseu)); */
+		/*			} */
+
+		/*			ctx_to_sseu[n_ctx_to_sseu++] = *change; */
+
+		/*			igt_debug(" > sseu change hw_id=%u/0x%x slice_mask=0x%x subslice_mask=0x%x\n", */
+		/*				  change->hw_id, change->hw_id, */
+		/*				  change->slice_mask, */
+		/*				  change->subslice_mask); */
+		/*			break; */
+		/*		} */
+		/*		} */
+		/*	} */
+		/* } */
+
+		/* do_ioctl(stream_fd, I915_PERF_IOCTL_DISABLE, 0); */
+
+		/* igt_debug("%f < %lu < %f\n", */
+		/*	  report_size * n_full_oa_reports * 0.45, */
+		/*	  n_periodic_reports * report_size, */
+		/*	  report_size * n_full_oa_reports * 0.55); */
+
+		/* igt_assert((n_periodic_reports * report_size) > */
+		/*	   (report_size * n_full_oa_reports * 0.45)); */
+		/* igt_assert((n_periodic_reports * report_size) < */
+		/*	   report_size * n_full_oa_reports * 0.55); */
+
+
+		/* /\* It's considered an error to read a stream while it's disabled */
+		/*  * since it would block indefinitely... */
+		/*  *\/ */
+		/* len = read(stream_fd, buf, buf_size); */
+
+		/* igt_assert_eq(len, -1); */
+		/* igt_assert_eq(errno, EIO); */
+
+		sleep(10);
+
+		if (i % 2) {
+			load_helper_stop(&lh_half_slice);
+			load_helper_deinit(&lh_half_slice);
+
+			load_helper_init(&lh_full_slice, FULL_SUBSLICES);
+			load_helper_run(&lh_full_slice, HIGH);
+		}
 	}
 
 	if (ctx_to_sseu)
@@ -4184,9 +4229,6 @@ test_dynamic_sseu(void)
 
 	load_helper_stop(&lh_full_slice);
 	load_helper_deinit(&lh_full_slice);
-
-	load_helper_stop(&lh_half_slice);
-	load_helper_deinit(&lh_half_slice);
 }
 
 static bool
