@@ -1834,17 +1834,20 @@ static void load_helper_init(struct load_helper *lh, enum subslices subslices)
 	arg.param = I915_CONTEXT_PARAM_SSEU;
 	sseu = (union drm_i915_gem_context_param_sseu *) &arg.value;
 
-	if (drmIoctl(drm_fd, DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM, &arg) == 0) {
+	do_ioctl(drm_fd, DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM, &arg);
 
-		if (subslices == HALF_SUBSLICES) {
-			/* Turn off even slices */
-			for (unsigned i = 0; i < 8; i += 2)
-				sseu->packed.slice_mask &= ~(1U << i);
-
-			drmIoctl(drm_fd, DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM, &arg);
-		}
+	if (subslices == HALF_SUBSLICES) {
+		sseu->packed.slice_mask = 1;
+		
+		/* /\* Turn off even slices *\/ */
+		/* for (unsigned i = 0; i < 8; i++) { */
+		/* 	if (i % 2) */
+		/* 		sseu->packed.slice_mask &= ~(1U << i); */
+		/* } */
+		
+		do_ioctl(drm_fd, DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM, &arg);
 	}
-
+	
 	igt_debug("load helper %p initialized with ctx_id=%u/0x%x slice=%hhx subslice=%hhx\n",
 		  lh, lh->context_id, lh->context_id,
 		  sseu->packed.slice_mask, sseu->packed.subslice_mask);
@@ -4059,6 +4062,8 @@ test_dynamic_sseu(void)
 
 			load_helper_init(&lh_half_slice, HALF_SUBSLICES);
 			load_helper_run(&lh_half_slice, HIGH);
+
+			igt_debug("switching half-slices\n");
 		}
 
 		igt_debug("ITER %i\n", i);
@@ -4215,7 +4220,7 @@ test_dynamic_sseu(void)
 		if (i % 2) {
 			load_helper_stop(&lh_half_slice);
 			load_helper_deinit(&lh_half_slice);
-
+			
 			load_helper_init(&lh_full_slice, FULL_SUBSLICES);
 			load_helper_run(&lh_full_slice, HIGH);
 		}
