@@ -6,6 +6,7 @@ test_progs = [
 	'core_getversion',
 	'core_prop_blob',
 	'core_setmaster_vs_auth',
+	'ctx_rpcs',
 	'debugfs_test',
 	'drm_import_export',
 	'drm_mm',
