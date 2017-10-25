@@ -84,6 +84,72 @@ struct local_drm_i915_query_info {
 	__u64 info_ptr;
 };
 
+#ifndef I915_PARAM_SLICE_MASK
+#define I915_PARAM_SLICE_MASK		 46
+#endif
+
+#ifndef I915_PARAM_SUBSLICE_MASK
+#define I915_PARAM_SUBSLICE_MASK	 47
+#endif
+
+#ifndef I915_QUERY_INFO_RCS_TOPOLOGY
+/* Query RCS topology.
+ *
+ * drm_i915_query_info.query_params[0] should be set to one of the
+ * I915_RCS_TOPOLOGY_* define.
+ *
+ * drm_i915_gem_query_info.info_ptr will be written to with
+ * drm_i915_rcs_topology_info.
+ */
+#define I915_QUERY_INFO_RCS_TOPOLOGY	1 /* version 1 */
+
+/* Query RCS slice topology
+ *
+ * The meaning of the drm_i915_rcs_topology_info fields is :
+ *
+ * params[0]: number of slices
+ *
+ * data: Each bit indicates whether a slice is available (1) or fused off (0).
+ * Formula to tell if slice X is available :
+ *
+ *         (data[X / 8] >> (X % 8)) & 1
+ */
+#define I915_RCS_TOPOLOGY_SLICE		0 /* version 1 */
+/* Query RCS subslice topology
+ *
+ * The meaning of the drm_i915_rcs_topology_info fields is :
+ *
+ * params[0]: number of slices
+ * params[1]: slice stride
+ *
+ * data: each bit indicates whether a subslice is available (1) or fused off
+ * (0). Formula to tell if slice X subslice Y is available :
+ *
+ *         (data[(X * params[1]) + Y / 8] >> (Y % 8)) & 1
+ */
+#define I915_RCS_TOPOLOGY_SUBSLICE	1 /* version 1 */
+/* Query RCS EU topology
+ *
+ * The meaning of the drm_i915_rcs_topology_info fields is :
+ *
+ * params[0]: number of slices
+ * params[1]: slice stride
+ * params[2]: subslice stride
+ *
+ * data: Each bit indicates whether a subslice is available (1) or fused off
+ * (0). Formula to tell if slice X subslice Y eu Z is available :
+ *
+ *         (data[X * params[1] + Y * params[2] + Z / 8] >> (Z % 8)) & 1
+ */
+#define I915_RCS_TOPOLOGY_EU		2 /* version 1 */
+#endif /* I915_QUERY_INFO_RCS_TOPOLOGY */
+
+struct local_drm_i915_rcs_topology_info {
+	__u32 params[6];
+
+	__u8 data[];
+};
+
 static bool query_info_supports(int fd, int version)
 {
 	struct local_drm_i915_query_info info = {};
@@ -263,13 +329,153 @@ static void test_query_engine_exec_class_instance(int fd)
 
 }
 
+static bool query_topology_supported(int fd)
+{
+	struct local_drm_i915_query_info info = {};
+
+	info.version = 1;
+	info.query = I915_QUERY_INFO_RCS_TOPOLOGY;
+	info.query_params[0] = I915_RCS_TOPOLOGY_SLICE;
+
+	return igt_ioctl(fd, DRM_IOCTL_I915_QUERY_INFO, &info) == 0;
+}
+
+static void test_query_topology_pre_gen8(int fd)
+{
+	struct local_drm_i915_query_info info = {};
+
+	info.version = 1;
+	info.query = I915_QUERY_INFO_RCS_TOPOLOGY;
+	info.query_params[0] = I915_RCS_TOPOLOGY_SLICE;
+
+	do_ioctl_err(fd, DRM_IOCTL_I915_QUERY_INFO, &info, ENODEV);
+}
+
+static void
+test_query_topology_coherent_slice_mask(int fd)
+{
+	struct local_drm_i915_query_info info;
+	struct local_drm_i915_rcs_topology_info *topology;
+	drm_i915_getparam_t gp;
+	int slice_mask, subslice_mask;
+	int i, topology_slices, topology_subslices_slice0;
+
+	gp.param = I915_PARAM_SLICE_MASK;
+	gp.value = &slice_mask;
+	do_ioctl(fd, DRM_IOCTL_I915_GETPARAM, &gp);
+
+	gp.param = I915_PARAM_SUBSLICE_MASK;
+	gp.value = &subslice_mask;
+	do_ioctl(fd, DRM_IOCTL_I915_GETPARAM, &gp);
+
+	igt_debug("slice_mask=0x%x subslice_mask=0x%x\n", slice_mask, subslice_mask);
+
+	/* Slices */
+	memset(&info, 0, sizeof(info));
+	info.version = 1;
+	info.query = I915_QUERY_INFO_RCS_TOPOLOGY;
+	info.query_params[0] = I915_RCS_TOPOLOGY_SLICE;
+	do_ioctl(fd, DRM_IOCTL_I915_QUERY_INFO, &info);
+	igt_assert_neq(info.info_ptr_len, 0);
+
+	topology = calloc(1, info.info_ptr_len);
+	info.info_ptr = to_user_pointer(topology);
+	do_ioctl(fd, DRM_IOCTL_I915_QUERY_INFO, &info);
+
+	topology_slices = 0;
+	for (i = 0; i < (topology->params[0] / 8) + 1; i++)
+		topology_slices += __builtin_popcount(topology->data[i]);
+
+	/* These 2 should always match. */
+	igt_assert(__builtin_popcount(slice_mask) == topology_slices);
+
+	free(topology);
+
+	/* Subslices */
+	memset(&info, 0, sizeof(info));
+	info.version = 1;
+	info.query = I915_QUERY_INFO_RCS_TOPOLOGY;
+	info.query_params[0] = I915_RCS_TOPOLOGY_SUBSLICE;
+	do_ioctl(fd, DRM_IOCTL_I915_QUERY_INFO, &info);
+	igt_assert_neq(info.info_ptr_len, 0);
+
+	topology = calloc(1, info.info_ptr_len);
+	info.info_ptr = to_user_pointer(topology);
+	do_ioctl(fd, DRM_IOCTL_I915_QUERY_INFO, &info);
+
+	topology_subslices_slice0 = 0;
+	for (i = 0; i < topology->params[1]; i++)
+		topology_subslices_slice0 += __builtin_popcount(topology->data[i]);
+
+	/* I915_PARAM_SUBSLICE_MASK returns the value for slice0, we
+	 * should match the values for the first slice of the
+	 * topology.
+	 */
+	igt_assert(__builtin_popcount(subslice_mask) == topology_subslices_slice0);
+
+	free(topology);
+}
+
+static void
+test_query_topology_matches_eu_total(int fd)
+{
+	struct local_drm_i915_query_info info;
+	struct local_drm_i915_rcs_topology_info *topology;
+	drm_i915_getparam_t gp;
+	int n_eus, n_eus_topology, s;
+
+	gp.param = I915_PARAM_EU_TOTAL;
+	gp.value = &n_eus;
+	do_ioctl(fd, DRM_IOCTL_I915_GETPARAM, &gp);
+	igt_debug("legacy n_eus=%i\n", n_eus);
+
+	memset(&info, 0, sizeof(info));
+	info.version = 1;
+	info.query = I915_QUERY_INFO_RCS_TOPOLOGY;
+	info.query_params[0] = I915_RCS_TOPOLOGY_EU;
+	do_ioctl(fd, DRM_IOCTL_I915_QUERY_INFO, &info);
+
+	topology = calloc(1, info.info_ptr_len);
+	info.info_ptr = to_user_pointer(topology);
+	do_ioctl(fd, DRM_IOCTL_I915_QUERY_INFO, &info);
+
+	n_eus_topology = 0;
+	for (s = 0; s < topology->params[0]; s++) {
+		int ss;
+
+		igt_debug("slice%i:\n", s);
+
+		for (ss = 0; ss < topology->params[1] / topology->params[2]; ss++) {
+			int eu, n_subslice_eus = 0;
+
+			igt_debug("\tsubslice: %i\n", ss);
+
+			igt_debug("\t\teu_mask:");
+			for (eu = 0; eu < topology->params[2]; eu++) {
+				uint8_t val = topology->data[s * topology->params[1] +
+							     ss * topology->params[2] + eu];
+				igt_debug(" 0x%hhx", val);
+				n_subslice_eus += __builtin_popcount(val);
+				n_eus_topology += __builtin_popcount(val);
+			}
+			igt_debug(" (%i)\n", n_subslice_eus);
+		}
+	}
+	igt_debug("topology n_eus=%i\n", n_eus_topology);
+
+	igt_assert(n_eus_topology == n_eus);
+	free(topology);
+}
+
 igt_main
 {
 	int fd = -1;
+	int devid;
 
 	igt_fixture {
 		fd = drm_open_driver(DRIVER_INTEL);
 		igt_require(query_info_supports(fd, 1 /* version */));
+		devid = intel_get_drm_devid(fd);
 	}
 
 	igt_subtest("query-version")
@@ -286,6 +492,24 @@ igt_main
 
 	igt_subtest("query-engine-exec-class-instance")
 		test_query_engine_exec_class_instance(fd);
+
+	igt_subtest("query-topology-pre-gen8") {
+		igt_require(intel_gen(devid) < 8);
+		igt_require(query_topology_supported(fd));
+		test_query_topology_pre_gen8(fd);
+	}
+
+	igt_subtest("query-topology-coherent-slice-mask") {
+		igt_require(AT_LEAST_GEN(devid, 8));
+		igt_require(query_topology_supported(fd));
+		test_query_topology_coherent_slice_mask(fd);
+	}
+
+	igt_subtest("query-topology-matches-eu-total") {
+		igt_require(AT_LEAST_GEN(devid, 8));
+		igt_require(query_topology_supported(fd));
+		test_query_topology_matches_eu_total(fd);
+	}
 
 	igt_fixture {
 		close(fd);
