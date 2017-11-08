@@ -201,6 +201,68 @@ static void test_query_engine_classes(int fd)
 	igt_assert_eq(num_engines, legacy_num_engines);
 }
 
+#define LOCAL_I915_EXEC_CLASS_INSTANCE	(1<<19)
+
+#define LOCAL_I915_EXEC_INSTANCE_SHIFT	(20)
+#define LOCAL_I915_EXEC_INSTANCE_MASK	(0xff << LOCAL_I915_EXEC_INSTANCE_SHIFT)
+
+#define local_i915_execbuffer2_engine(class, instance) \
+	(LOCAL_I915_EXEC_CLASS_INSTANCE | \
+	(class) | \
+	((instance) << LOCAL_I915_EXEC_INSTANCE_SHIFT))
+
+static int exec_noop(int fd, bool mustpass,
+		     enum local_drm_i915_engine_class class,
+		     uint8_t instance)
+{
+	uint32_t bbe = MI_BATCH_BUFFER_END;
+	struct drm_i915_gem_execbuffer2 execbuf;
+	struct drm_i915_gem_exec_object2 exec;
+	int ret;
+
+	memset(&exec, 0, sizeof(exec));
+	exec.handle = gem_create(fd, 4096);
+	gem_write(fd, exec.handle, 0, &bbe, sizeof(bbe));
+
+	memset(&execbuf, 0, sizeof(execbuf));
+	execbuf.buffers_ptr = to_user_pointer(&exec);
+	execbuf.buffer_count = 1;
+	execbuf.flags = local_i915_execbuffer2_engine(class, instance);
+	ret = __gem_execbuf(fd, &execbuf);
+	if (mustpass)
+		igt_assert_eq(ret, 0);
+	gem_close(fd, exec.handle);
+
+	return ret;
+}
+
+static void test_query_engine_exec_class_instance(int fd)
+{
+	enum local_drm_i915_engine_class class;
+
+	for (class = 0; class < I915_ENGINE_CLASS_MAX; class++) {
+		struct local_drm_i915_engine_info *engines;
+		struct local_drm_i915_query_info info = {};
+		unsigned engine, num_engines;
+
+		info.version = 1;
+		info.query = I915_QUERY_INFO_ENGINE;
+		info.query_params[0] = class;
+
+		do_ioctl(fd, DRM_IOCTL_I915_QUERY_INFO, &info);
+
+		num_engines = info.info_ptr_len / sizeof(*engines);
+		engines = calloc(num_engines, sizeof(*engines));
+
+		for (engine = 0; engine < num_engines; engine++)
+			exec_noop(fd, true, class, engines[engine].instance);
+		exec_noop(fd, false, class, ~0);
+
+		free(engines);
+	}
+
+}
+
 igt_main
 {
 	int fd = -1;
@@ -221,6 +283,9 @@ igt_main
 
 	igt_subtest("query-engine-classes")
 		test_query_engine_classes(fd);
+
+	igt_subtest("query-engine-exec-class-instance")
+		test_query_engine_exec_class_instance(fd);
 
 	igt_fixture {
 		close(fd);
