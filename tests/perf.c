@@ -538,6 +538,14 @@ oa_report_get_ctx_id(uint32_t *report)
 	return report[2];
 }
 
+static const char *
+oa_report_get_reason(const uint32_t *report)
+{
+	if (IS_HASWELL(devid))
+		return "gen7-unknown";
+	return gen8_read_report_reason(report);
+}
+
 static double
 oa_reports_tick_per_period(uint32_t *report0, uint32_t *report1)
 {
@@ -4079,6 +4087,128 @@ test_gpu_timestamps(void)
 	free(buf);
 }
 
+static void
+test_gpu_system_timestamps(void)
+{
+	/* ~5 micro second period */
+	int oa_exponent = max_oa_exponent_for_period_lte(5000);
+	uint64_t properties[] = {
+		/* Include OA reports & GPU timestamps in samples */
+		DRM_I915_PERF_PROP_SAMPLE_OA, true,
+		DRM_I915_PERF_PROP_SAMPLE_GPU_TS, true,
+		DRM_I915_PERF_PROP_SAMPLE_SYSTEM_TS, true,
+
+		/* OA unit configuration */
+		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
+		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
+		DRM_I915_PERF_PROP_OA_EXPONENT, oa_exponent,
+	};
+	struct drm_i915_perf_open_param param = {
+		.flags = I915_PERF_FLAG_FD_CLOEXEC,
+		.num_properties = ARRAY_SIZE(properties) / 2,
+		.properties_ptr = to_user_pointer(properties),
+	};
+	struct drm_i915_perf_record_header *header;
+	int n_min_reports = (MAX_OA_BUF_SIZE / 2) / 256;
+	int buf_size = 2 * n_min_reports * (256 + 8 + sizeof(struct drm_i915_perf_record_header));
+	int len;
+	uint8_t *buf = malloc(buf_size);
+	int n_reports = 0;
+	struct {
+		uint64_t gpu;
+		uint64_t system;
+	} last_timestamps[2];
+	struct {
+		uint64_t gpu;
+		uint64_t gpu_scaled;
+		uint64_t system;
+	} accumulated_deltas;
+
+	load_helper_init();
+	load_helper_run(HIGH);
+
+	stream_fd = __perf_open(drm_fd, &param, false /* prevent_pm */);
+
+	igt_debug("Waiting for %u reports...\n", n_min_reports);
+
+	nanosleep(&(struct timespec){ .tv_sec = 0,
+				      .tv_nsec = n_min_reports * 5000 },
+		NULL);
+
+	while ((len = read(stream_fd, buf, buf_size)) == -1 && errno == EINTR)
+		;
+
+	igt_debug("Read len=%i\n", len);
+
+	igt_assert_neq(len, -1);
+
+	__perf_close(stream_fd);
+
+	load_helper_stop();
+	load_helper_fini();
+
+	/* Look into the reports to verify that added gpu timestamp
+	 * deltas match the system timestamp deltas. GPU timestamps
+	 * should still match between on the least significant 32bits.
+	 */
+	memset(&accumulated_deltas, 0, sizeof(accumulated_deltas));
+	for (int offset = 0; offset < len; offset += header->size) {
+		header = (void *)(buf + offset);
+
+		igt_assert_neq(header->type, DRM_I915_PERF_RECORD_OA_BUFFER_LOST);
+
+		if (header->type == DRM_I915_PERF_RECORD_SAMPLE) {
+			uint64_t *gpu_timestamp = (void *) (header + 1);
+			uint64_t *system_timestamp = ((void *) (header + 1)) + 8;
+			uint32_t *report = ((void *) (header + 1)) + 2 * sizeof(uint64_t);
+
+			igt_debug("report=%p reason=%s gpu_ts=%" PRIx64 " system_ts=%" PRIx64 " report_ts=%x\n",
+				  header, oa_report_get_reason(report),
+				  *gpu_timestamp, *system_timestamp, report[1]);
+
+			igt_assert_eq(report[1], *gpu_timestamp & 0xffffffff);
+
+			last_timestamps[n_reports % 2].gpu = *gpu_timestamp;
+			last_timestamps[n_reports % 2].system = *system_timestamp;
+			n_reports++;
+
+			if (n_reports >= 2) {
+				int t1 = (n_reports - 1) % 2, t0 = (n_reports - 2) % 2;
+				uint64_t gpu_delta =
+					last_timestamps[t1].gpu - last_timestamps[t0].gpu;
+				uint64_t scaled_gpu_delta =
+					timebase_scale(gpu_delta);
+				uint64_t system_delta =
+					last_timestamps[t1].system - last_timestamps[t0].system;
+
+				igt_debug("\tdelta gpu=%" PRIu64 "(%" PRIu64 "ns) system=%" PRIu64 "ns\n",
+					  gpu_delta, scaled_gpu_delta, system_delta);
+				igt_assert(timestamp_delta_within(scaled_gpu_delta, system_delta, 2));
+
+				accumulated_deltas.gpu += gpu_delta;
+				accumulated_deltas.gpu_scaled += scaled_gpu_delta;
+				accumulated_deltas.system += system_delta;
+			}
+		}
+	}
+	igt_assert(n_reports >= 0);
+	igt_assert(timestamp_delta_within(timebase_scale(accumulated_deltas.gpu), accumulated_deltas.system, 2));
+	igt_debug("accumulated deltas gpu=%" PRIu64 " gpu_scaled=%" PRIu64 " gpu_scale_total=%" PRIu64
+		  " system=%" PRIu64
+		  " diff=%" PRIu64 " diff_scaled=%" PRIu64 "\n",
+		  accumulated_deltas.gpu, accumulated_deltas.gpu_scaled,
+		  timebase_scale(accumulated_deltas.gpu),
+		  accumulated_deltas.system,
+		  (accumulated_deltas.gpu_scaled > accumulated_deltas.system) ?
+		  (accumulated_deltas.gpu_scaled - accumulated_deltas.system) :
+		  (accumulated_deltas.system - accumulated_deltas.gpu_scaled),
+		  (timebase_scale(accumulated_deltas.gpu) > accumulated_deltas.system) ?
+		  (timebase_scale(accumulated_deltas.gpu) - accumulated_deltas.system) :
+		  (accumulated_deltas.system - timebase_scale(accumulated_deltas.gpu)));
+
+	free(buf);
+}
+
 static int __i915_perf_add_config(int fd, struct drm_i915_perf_oa_config *config)
 {
 	int ret = igt_ioctl(fd, DRM_IOCTL_I915_PERF_ADD_CONFIG, config);
@@ -4623,6 +4753,10 @@ igt_main
 
 	igt_subtest("gpu-timestamp") {
 		test_gpu_timestamps();
+	}
+
+	igt_subtest("gpu-system-timestamps") {
+		test_gpu_system_timestamps();
 	}
 
 	igt_subtest("invalid-create-userspace-config")
