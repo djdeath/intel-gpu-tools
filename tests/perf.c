@@ -209,9 +209,9 @@ get_oa_format(enum drm_i915_oa_format format)
 }
 
 static bool
-timestamp_delta_within(uint32_t delta,
-		       uint32_t expected_delta,
-		       uint32_t margin)
+timestamp_delta_within(int64_t delta,
+		       int64_t expected_delta,
+		       int64_t margin)
 {
 	return delta >= (expected_delta - margin) &&
 	       delta <= (expected_delta + margin);
