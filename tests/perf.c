@@ -81,6 +81,8 @@ IGT_TEST_DESCRIPTION("Test the i915 perf metrics streaming interface");
 #define PIPE_CONTROL_PPGTT_WRITE	(0 << 2)
 #define PIPE_CONTROL_GLOBAL_GTT_WRITE   (1 << 2)
 
+#define MAX_OA_BUF_SIZE (16 * 1024 * 1024)
+
 struct accumulator {
 #define MAX_RAW_OA_COUNTERS 62
 	enum drm_i915_oa_format format;
@@ -4002,6 +4004,81 @@ test_rc6_disable(void)
 	igt_assert_neq(n_events_end - n_events_start, 0);
 }
 
+static void
+test_gpu_timestamps(void)
+{
+	/* ~5 micro second period */
+	int oa_exponent = max_oa_exponent_for_period_lte(5000);
+	uint64_t properties[] = {
+		/* Include OA reports & GPU timestamps in samples */
+		DRM_I915_PERF_PROP_SAMPLE_OA, true,
+		DRM_I915_PERF_PROP_SAMPLE_GPU_TS, true,
+
+		/* OA unit configuration */
+		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
+		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
+		DRM_I915_PERF_PROP_OA_EXPONENT, oa_exponent,
+	};
+	struct drm_i915_perf_open_param param = {
+		.flags = I915_PERF_FLAG_FD_CLOEXEC,
+		.num_properties = ARRAY_SIZE(properties) / 2,
+		.properties_ptr = to_user_pointer(properties),
+	};
+	struct drm_i915_perf_record_header *header;
+	int n_min_reports = (MAX_OA_BUF_SIZE / 2) / 256;
+	int buf_size = 2 * n_min_reports * (256 + 8 + sizeof(struct drm_i915_perf_record_header));
+	int len;
+	uint8_t *buf = malloc(buf_size);
+
+	load_helper_init();
+	load_helper_run(HIGH);
+
+	stream_fd = __perf_open(drm_fd, &param, false /* prevent_pm */);
+
+	igt_debug("Waiting for %u reports...\n", n_min_reports);
+
+	nanosleep(&(struct timespec){ .tv_sec = 0,
+				      .tv_nsec = n_min_reports * 5000 },
+		NULL);
+
+	while ((len = read(stream_fd, buf, buf_size)) == -1 && errno == EINTR)
+		;
+
+	igt_debug("Read len=%i\n", len);
+
+	igt_assert_neq(len, -1);
+
+	__perf_close(stream_fd);
+
+	load_helper_stop();
+	load_helper_fini();
+
+	/* Look into the reports to verify that added gpu timestamp
+	 * fields match timestamps from the reports (on their lower
+	 * 32bits part).
+	 */
+	int n_reports = 0;
+	for (int offset = 0; offset < len; offset += header->size) {
+		header = (void *)(buf + offset);
+
+		igt_assert_neq(header->type, DRM_I915_PERF_RECORD_OA_BUFFER_LOST);
+
+		if (header->type == DRM_I915_PERF_RECORD_SAMPLE) {
+			uint64_t *gpu_timestamp = (void *) (header + 1);
+			uint32_t *report = (void *) (header + 1) + sizeof(uint64_t);
+
+			igt_debug("gpu_timestamp=%" PRIx64 " report_ts=%x\n",
+				  *gpu_timestamp, report[1]);
+
+			igt_assert_eq(report[1], *gpu_timestamp & 0xffffffff);
+			n_reports++;
+		}
+	}
+	igt_assert(n_reports >= 0);
+
+	free(buf);
+}
+
 static int __i915_perf_add_config(int fd, struct drm_i915_perf_oa_config *config)
 {
 	int ret = igt_ioctl(fd, DRM_IOCTL_I915_PERF_ADD_CONFIG, config);
@@ -4543,6 +4620,10 @@ igt_main
 
 	igt_subtest("rc6-disable")
 		test_rc6_disable();
+
+	igt_subtest("gpu-timestamp") {
+		test_gpu_timestamps();
+	}
 
 	igt_subtest("invalid-create-userspace-config")
 		test_invalid_create_userspace_config();
