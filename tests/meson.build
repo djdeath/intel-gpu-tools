@@ -144,6 +144,7 @@ test_progs = [
 	'gen3_render_tiledy_blits',
 	'gen7_forcewake_mt',
 	'gvt_basic',
+	'i915_query',
 	'kms_3d',
 	'kms_addfb_basic',
 	'kms_atomic',
