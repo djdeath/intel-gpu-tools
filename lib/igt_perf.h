@@ -31,13 +31,6 @@
 
 #include "igt_gt.h"
 
-enum drm_i915_pmu_engine_sample {
-	I915_SAMPLE_BUSY = 0,
-	I915_SAMPLE_WAIT = 1,
-	I915_SAMPLE_SEMA = 2,
-	I915_ENGINE_SAMPLE_MAX /* non-ABI */
-};
-
 #define I915_PMU_SAMPLE_BITS (4)
 #define I915_PMU_SAMPLE_MASK (0xf)
 #define I915_PMU_SAMPLE_INSTANCE_BITS (8)
