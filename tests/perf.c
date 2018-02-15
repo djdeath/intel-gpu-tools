@@ -27,6 +27,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <ctype.h>
 #include <errno.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -467,7 +468,7 @@ oa_report_is_periodic(uint32_t oa_exponent, const uint32_t *report)
 }
 
 static bool
-oa_report_ctx_is_valid(uint32_t *report)
+oa_report_ctx_is_valid(const uint32_t *report)
 {
 	if (IS_HASWELL(devid)) {
 		return false; /* TODO */
@@ -481,7 +482,7 @@ oa_report_ctx_is_valid(uint32_t *report)
 }
 
 static uint32_t
-oa_report_get_ctx_id(uint32_t *report)
+oa_report_get_ctx_id(const uint32_t *report)
 {
 	if (!oa_report_ctx_is_valid(report))
 		return 0xffffffff;
@@ -711,8 +712,8 @@ gen8_40bit_a_delta(uint64_t value0, uint64_t value1)
 static void
 accumulate_uint32(size_t offset,
 		  uint32_t *report0,
-                  uint32_t *report1,
-                  uint64_t *delta)
+		  uint32_t *report1,
+		  uint64_t *delta)
 {
 	uint32_t value0 = *(uint32_t *)(((uint8_t *)report0) + offset);
 	uint32_t value1 = *(uint32_t *)(((uint8_t *)report1) + offset);
@@ -722,10 +723,10 @@ accumulate_uint32(size_t offset,
 
 static void
 accumulate_uint40(int a_index,
-                  uint32_t *report0,
-                  uint32_t *report1,
+		  uint32_t *report0,
+		  uint32_t *report1,
 		  enum drm_i915_oa_format format,
-                  uint64_t *delta)
+		  uint64_t *delta)
 {
 	uint64_t value0 = gen8_read_40bit_a_counter(report0, format, a_index),
 		 value1 = gen8_read_40bit_a_counter(report1, format, a_index);
@@ -4279,6 +4280,171 @@ test_whitelisted_registers_userspace_config(void)
 	i915_perf_remove_config(drm_fd, config_id);
 }
 
+static void
+read_process_name(char *buffer, size_t len, int32_t pid)
+{
+	char path[256];
+	int proc_fd, i, l;
+
+	if (pid < 0) {
+		snprintf(buffer, len, "<unknown>");
+		return;
+	} else if (pid == 0) {
+		snprintf(buffer, len, "<kernel>");
+		return;
+	}
+
+	snprintf(path, sizeof(path), "/proc/%i/comm", pid);
+
+	proc_fd = open(path, O_RDONLY);
+	if (proc_fd < 0) {
+		snprintf(buffer, len, "<unknown>");
+		return;
+	}
+
+	while ((l = read(proc_fd, buffer, len)) < 0 && errno == EINTR)
+		;
+
+	close(proc_fd);
+
+	for (i = 0; i < l; i++) {
+		if (!isspace(buffer[i]))
+			continue;
+
+		buffer[i] = '\0';
+		break;
+	}
+}
+
+static bool
+timestamp_within_range(uint32_t ts, uint32_t ts0, uint32_t ts1)
+{
+	if (ts0 < ts1)
+		return ts0 <= ts && ts <= ts1;
+	else
+		return ts1 <= ts && ts <= ts0;
+}
+
+static void
+test_process_id_samples(void)
+{
+	uint64_t oa_exponent = oa_exp_1_millisec;
+	uint64_t properties[] = {
+		/* Include OA reports in samples */
+		DRM_I915_PERF_PROP_SAMPLE_OA, true,
+		/* Include process ids */
+		DRM_I915_PERF_PROP_PROCESS_ID, true,
+
+		/* OA unit configuration */
+		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id /* updated below */,
+		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format, /* update below */
+		DRM_I915_PERF_PROP_OA_EXPONENT, oa_exponent, /* update below */
+	};
+	struct drm_i915_perf_open_param param = {
+		.flags = I915_PERF_FLAG_FD_CLOEXEC,
+		.num_properties = ARRAY_SIZE(properties) / 2,
+		.properties_ptr = to_user_pointer(properties),
+	};
+	size_t format_size = get_oa_format(test_oa_format).size;
+	int max_reports = MAX_OA_BUF_SIZE / format_size;
+	size_t sample_size = sizeof(struct drm_i915_perf_record_header) + sizeof(int32_t[2]) + format_size;
+	int buf_size = sample_size * max_reports * 1.5;
+	uint8_t *buf = malloc(buf_size);
+	pid_t pid = getpid();
+	int i;
+
+	stream_fd = __perf_open(drm_fd, &param, false);
+	assert(stream_fd >= 0);
+
+	for (i = 0; i < 10; i++) {
+		const struct {
+			struct drm_i915_perf_record_header header;
+			int32_t pid;
+			int32_t tid;
+			uint32_t report[];
+		} *sample;
+		uint32_t ts0, ts1, last_ts;
+		bool seen_pid = false, seen_known_pid = false, fail = false;
+		ssize_t len;
+
+		igt_debug("run%i current pid : %i\n", i, pid);
+
+		ts0 = i915_get_one_gpu_timestamp();
+		ts1 = i915_get_one_gpu_timestamp();
+		last_ts = ts0 - 1;
+
+		while (!seen_pid && last_ts <= (ts1 + 0x10000)) {
+			while ((len = read(stream_fd, buf, buf_size)) < 0 && errno == EINTR)
+				;
+
+			igt_assert(len > 0);
+
+			igt_debug("read buffer=%i len=%li looking for ts in range=%x-%x\n",
+				  buf_size, len, ts0, ts1);
+
+			for (size_t offset = 0; offset < len; offset += sample->header.size) {
+				char process_name[80];
+
+				sample = (void *)(buf + offset);
+
+				switch (sample->header.type) {
+				case DRM_I915_PERF_RECORD_OA_REPORT_LOST:
+					igt_debug("report lost\n");
+					break;
+				case DRM_I915_PERF_RECORD_OA_BUFFER_LOST:
+					igt_assert(!"unexpected overflow");
+					break;
+				case DRM_I915_PERF_RECORD_SAMPLE:
+					read_process_name(process_name, sizeof(process_name), sample->pid);
+
+					igt_debug("    ts=%08x hw_id=0x%08x timer=%i pid=%i(%s) tid=%i",
+						  sample->report[1], oa_report_get_ctx_id(sample->report),
+						  oa_report_is_periodic(oa_exponent, sample->report),
+						  sample->pid, process_name, sample->tid);
+
+					if (!oa_report_is_periodic(oa_exponent, sample->report))
+						seen_context_switch = true;
+
+					if (timestamp_within_range(sample->report[1], ts0, ts1) &&
+					    pid == sample->pid)
+						seen_pid = true;
+
+					if (oa_report_get_ctx_id(sample->report) == 0xffffffff) {
+						if (sample->pid != -1) {
+							igt_debug("      => invalid pid");
+							fail = true;
+						}
+					} else if (seen_known_pid) {
+						/*
+						 * Once we've seen a
+						 * pid that isn't -1,
+						 * then all following
+						 * pid field should be
+						 * populated.
+						 */
+						if (sample->pid == -1) {
+							igt_debug("      => invalid pid");
+							fail = true;
+						}
+					}
+
+					if (sample->pid != -1)
+						seen_known_pid = true;
+
+					last_ts = sample->report[1];
+
+					igt_debug("\n");
+				}
+			}
+		}
+
+		igt_assert(!fail);
+		igt_assert(seen_pid);
+	}
+
+	__perf_close(stream_fd);
+}
+
 static unsigned
 read_i915_module_ref(void)
 {
@@ -4511,6 +4677,9 @@ igt_main
 
 	igt_subtest("whitelisted-registers-userspace-config")
 		test_whitelisted_registers_userspace_config();
+
+	igt_subtest("process-id-samples")
+		test_process_id_samples();
 
 	igt_fixture {
 		/* leave sysctl options in their default state... */
