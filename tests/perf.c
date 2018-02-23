@@ -3957,6 +3957,12 @@ test_whitelisted_registers_userspace_config(void)
 		b_counters_regs[config.n_boolean_regs * 2 + 1] = 0;
 		config.n_boolean_regs++;
 	}
+	if (intel_gen(devid) <= 7) {
+		/* NOASELECT */
+		b_counters_regs[config.n_boolean_regs * 2] = 0x236C;
+		b_counters_regs[config.n_boolean_regs * 2 + 1] = 0;
+		config.n_boolean_regs++;
+	}
 	config.boolean_regs_ptr = (uintptr_t) b_counters_regs;
 
 	if (intel_gen(devid) >= 8) {
