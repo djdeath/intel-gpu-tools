@@ -1188,26 +1188,6 @@ test_invalid_oa_format_id(void)
 }
 
 static void
-test_missing_sample_flags(void)
-{
-	uint64_t properties[] = {
-		/* No _PROP_SAMPLE_xyz flags */
-
-		/* OA unit configuration */
-		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
-		DRM_I915_PERF_PROP_OA_EXPONENT, oa_exp_1_millisec,
-		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
-	};
-	struct drm_i915_perf_open_param param = {
-		.flags = I915_PERF_FLAG_FD_CLOEXEC,
-		.num_properties = sizeof(properties) / 16,
-		.properties_ptr = to_user_pointer(properties),
-	};
-
-	do_ioctl_err(drm_fd, DRM_IOCTL_I915_PERF_OPEN, &param, EINVAL);
-}
-
-static void
 read_2_oa_reports(int format_id,
 		  int exponent,
 		  uint32_t *oa_report0,
@@ -2809,14 +2789,37 @@ test_disabled_read_error(void)
 	__perf_close(stream_fd);
 }
 
+static bool
+i915_perf_supports_disabled_sampling(void)
+{
+	uint64_t properties[] = {
+		DRM_I915_PERF_PROP_SAMPLE_OA, false,
+		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
+		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
+	};
+	struct drm_i915_perf_open_param param = {
+		.flags = I915_PERF_FLAG_FD_CLOEXEC,
+		.num_properties = ARRAY_SIZE(properties) / 2,
+		.properties_ptr = to_user_pointer(properties),
+	};
+	int ret = igt_ioctl(drm_fd, DRM_IOCTL_I915_PERF_OPEN, &param);
+
+	if (ret >= 0) {
+		close(ret);
+		return true;
+	}
+
+	return false;
+}
+
 static void
-test_mi_rpc(void)
+test_mi_rpc(bool enable_sampling)
 {
 	uint64_t properties[] = {
 		/* Note: we have to specify at least one sample property even
 		 * though we aren't interested in samples in this case.
 		 */
-		DRM_I915_PERF_PROP_SAMPLE_OA, true,
+		DRM_I915_PERF_PROP_SAMPLE_OA, enable_sampling,
 
 		/* OA unit configuration */
 		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
@@ -4134,9 +4137,6 @@ igt_main
 	igt_subtest("invalid-oa-format-id")
 		test_invalid_oa_format_id();
 
-	igt_subtest("missing-sample-flags")
-		test_missing_sample_flags();
-
 	igt_subtest("oa-formats")
 		test_oa_formats();
 
@@ -4173,7 +4173,12 @@ igt_main
 		test_short_reads();
 
 	igt_subtest("mi-rpc")
-		test_mi_rpc();
+		test_mi_rpc(true);
+
+	igt_subtest("mi-rpc-without-stream-sampling") {
+		igt_require(i915_perf_supports_disabled_sampling());
+		test_mi_rpc(false);
+	}
 
 	igt_subtest("unprivileged-single-ctx-counters") {
 		igt_require(IS_HASWELL(devid));
