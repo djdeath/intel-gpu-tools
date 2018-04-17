@@ -23,6 +23,7 @@ if libdrm_intel.found()
 		'intel_upload_blit_large_gtt',
 		'intel_upload_blit_large_map',
 		'intel_upload_blit_small',
+		'gem_exec_delay',
 		'gem_userptr_benchmark',
 	]
 endif
