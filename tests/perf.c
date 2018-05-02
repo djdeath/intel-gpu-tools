@@ -47,6 +47,12 @@ IGT_TEST_DESCRIPTION("Test the i915 perf metrics streaming interface");
 #define GEN6_MI_REPORT_PERF_COUNT ((0x28 << 23) | (3 - 2))
 #define GEN8_MI_REPORT_PERF_COUNT ((0x28 << 23) | (4 - 2))
 
+#define MI_LOAD_REGISTER_MEM  (0x29 << 23)
+#define MI_STORE_REGISTER_MEM (0x24 << 23)
+#define MI_COPY_MEM_MEM       (0x2e << 23 | (5 - 2)) /* Gen8+ */
+
+#define GEN7_3DPRIM_BASE_VERTEX (0x2440)
+
 #define OAREPORT_REASON_MASK           0x3f
 #define OAREPORT_REASON_SHIFT          19
 #define OAREPORT_REASON_TIMER          (1<<0)
@@ -2879,6 +2885,119 @@ test_mi_rpc(void)
 }
 
 static void
+test_mi_rpc_cs_coherency(void)
+{
+	uint64_t properties[] = {
+		/* Note: we have to specify at least one sample property even
+		 * though we aren't interested in samples in this case.
+		 */
+		DRM_I915_PERF_PROP_SAMPLE_OA, true,
+
+		/* OA unit configuration */
+		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
+		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
+
+		/* Note: no OA exponent specified in this case */
+	};
+	struct drm_i915_perf_open_param param = {
+		.flags = I915_PERF_FLAG_FD_CLOEXEC,
+		.num_properties = sizeof(properties) / 16,
+		.properties_ptr = to_user_pointer(properties),
+	};
+	drm_intel_bufmgr *bufmgr = drm_intel_bufmgr_gem_init(drm_fd, 4096);
+	drm_intel_context *context;
+	struct intel_batchbuffer *batch;
+	drm_intel_bo *bo;
+	uint32_t *report32;
+	int ret;
+
+	stream_fd = __perf_open(drm_fd, &param, false);
+
+	drm_intel_bufmgr_gem_enable_reuse(bufmgr);
+
+	context = drm_intel_gem_context_create(bufmgr);
+	igt_assert(context);
+
+	batch = intel_batchbuffer_alloc(bufmgr, devid);
+
+	bo = drm_intel_bo_alloc(bufmgr, "mi_rpc dest bo", 4096, 64);
+
+	ret = drm_intel_bo_map(bo, true);
+	igt_assert_eq(ret, 0);
+
+	memset(bo->virtual, 0x80, 4096);
+	drm_intel_bo_unmap(bo);
+
+	emit_report_perf_count(batch,
+			       bo, /* dst */
+			       0, /* dst offset in bytes */
+			       0xdeadbeef); /* report ID */
+
+	if (intel_gen(devid) >= 8) {
+		BEGIN_BATCH(64 * (1 + 2), 64 * 2);
+
+		for (int i = 0; i < 64; i++) {
+			OUT_BATCH(MI_COPY_MEM_MEM);
+			OUT_RELOC(bo,
+				  I915_GEM_DOMAIN_INSTRUCTION,
+				  I915_GEM_DOMAIN_INSTRUCTION,
+				  256 + i * 4); /* dst */
+			OUT_RELOC(bo,
+				  I915_GEM_DOMAIN_INSTRUCTION,
+				  I915_GEM_DOMAIN_INSTRUCTION,
+				  i * 4); /* src */
+		}
+	} else {
+		BEGIN_BATCH(5 + (3 + 3) * 64, 2 * 64);
+
+		/* Make sure nothing else is running while we MI_LRM/MI_SRM. */
+		OUT_BATCH(GFX_OP_PIPE_CONTROL | (5 - 2));
+		OUT_BATCH(PIPE_CONTROL_CS_STALL | PIPE_CONTROL_RENDER_TARGET_FLUSH);
+		OUT_BATCH(0); /* address */
+		OUT_BATCH(0); /* imm lower */
+		OUT_BATCH(0); /* imm upper */
+
+		for (int i = 0; i < 64; i++) {
+			OUT_BATCH(MI_LOAD_REGISTER_MEM | (3 - 2));
+			OUT_BATCH(GEN7_3DPRIM_BASE_VERTEX);
+			OUT_RELOC(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION, i * 4);
+
+			OUT_BATCH(MI_STORE_REGISTER_MEM | (3 - 2));
+			OUT_BATCH(GEN7_3DPRIM_BASE_VERTEX);
+			OUT_RELOC(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION, 256 + i * 4);
+		}
+	}
+	ADVANCE_BATCH();
+
+	intel_batchbuffer_flush_with_context(batch, context);
+
+	ret = drm_intel_bo_map(bo, false /* write enable */);
+	igt_assert_eq(ret, 0);
+
+	report32 = bo->virtual;
+
+	for (int i = 0; i < 64; i++)
+		igt_debug("report=0x%08x - 0x%08x\n", report32[i], report32[64 + i]);
+
+	/* Trivial report check */
+	igt_assert_eq(report32[0], 0xdeadbeef); /* report ID */
+
+	/*
+	 * Verify coherency between the OA generated report and the
+	 * copy following the generation.
+	 */
+	for (int i = 0; i < 64; i++)
+		igt_assert_eq(report32[i], report32[64 + i]);
+
+	drm_intel_bo_unmap(bo);
+	drm_intel_bo_unreference(bo);
+	intel_batchbuffer_free(batch);
+	drm_intel_gem_context_destroy(context);
+	drm_intel_bufmgr_destroy(bufmgr);
+	__perf_close(stream_fd);
+}
+
+static void
 emit_stall_timestamp_and_rpc(struct intel_batchbuffer *batch,
 			     drm_intel_bo *dst,
 			     int timestamp_offset,
@@ -4174,6 +4293,9 @@ igt_main
 
 	igt_subtest("mi-rpc")
 		test_mi_rpc();
+
+	igt_subtest("mi-rpc-copy-coherency")
+		test_mi_rpc_cs_coherency();
 
 	igt_subtest("unprivileged-single-ctx-counters") {
 		igt_require(IS_HASWELL(devid));
