@@ -67,7 +67,7 @@ static const struct named_register {
 } nonpriv_registers[] = {
 	{ "NOPID", NOCTX, RCS0, 0x2094, 1, 7 },
 	{ "MI_PREDICATE_RESULT_2", NOCTX, RCS0, 0x23bc, 1, 7 },
-	{ "INSTPM", GEN9, RCS0, 0x20c0, 1, 7 },
+	{ "INSTPM", GEN7, RCS0, 0x20c0, 1, 7 },
 	{ "IA_VERTICES_COUNT", GEN4, RCS0, 0x2310, 2, 7 },
 	{ "IA_PRIMITIVES_COUNT", GEN4, RCS0, 0x2318, 2, 7 },
 	{ "VS_INVOCATION_COUNT", GEN4, RCS0, 0x2320, 2, 7 },
