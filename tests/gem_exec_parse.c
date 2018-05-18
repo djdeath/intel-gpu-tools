@@ -261,6 +261,7 @@ struct test_lri {
 	const char *name; /* register name for debug info */
 	uint32_t reg; /* address to test */
 	uint32_t read_mask; /* ignore things like HW status bits */
+	uint32_t write_mask; /* mask to write the register with */
 	uint32_t init_val; /* initial identifiable value to set without LRI */
 	uint32_t test_val; /* value to attempt loading via LRI command */
 	bool whitelisted; /* expect to become NOOP / fail if not whitelisted */
@@ -273,7 +274,7 @@ test_lri(int fd, uint32_t handle, struct test_lri *test)
 	uint32_t lri[] = {
 		MI_LOAD_REGISTER_IMM,
 		test->reg,
-		test->test_val,
+		test->test_val | test->write_mask,
 		MI_BATCH_BUFFER_END,
 	};
 	int bad_lri_errno = parser_version >= 8 ? 0 : -EINVAL;
@@ -284,7 +285,8 @@ test_lri(int fd, uint32_t handle, struct test_lri *test)
 		  test->name, test->reg, test->test_val,
 		  expected_errno, expect);
 
-	intel_register_write(test->reg, test->init_val);
+	intel_register_write(test->reg,
+			     test->init_val | test->write_mask);
 
 	igt_assert_eq_u32((intel_register_read(test->reg) &
 			   test->read_mask),
@@ -498,14 +500,16 @@ igt_main
 	}
 
 	igt_subtest_group {
-#define REG(R, MSK, INI, V, OK, MIN_V) { #R, R, MSK, INI, V, OK, MIN_V }
+#define REG(R, RMSK, WMSK, INI, V, OK, MIN_V) { #R, R, RMSK, WMSK, INI, V, OK, MIN_V }
 		struct test_lri lris[] = {
 			/* dummy head pointer */
 			REG(OASTATUS2,
-			    0xffffff80, 0xdeadf000, 0xbeeff000, false, 0),
+			    0xffffff80, 0x00000000,
+			    0xdeadf000, 0xbeeff000, false, 0),
 			/* NB: [1:0] MBZ */
 			REG(SO_WRITE_OFFSET_0,
-			    0xfffffffc, 0xabcdabc0, 0xbeefbee0, true, 0),
+			    0xfffffffc, 0x00000000,
+			    0xabcdabc0, 0xbeefbee0, true, 0),
 
 			/* It's really important for us to check that
 			 * an LRI to OACONTROL doesn't result in an
@@ -521,7 +525,8 @@ igt_main
 			 * while leaving the OA unit disabled
 			 */
 			REG(OACONTROL,
-			    0xfffff000, 0xfeed0000, 0x31337000, false, 9)
+			    0xfffff000, 0x00000000,
+			    0xfeed0000, 0x31337000, false, 9),
 		};
 #undef REG
 
