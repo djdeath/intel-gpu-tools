@@ -63,97 +63,100 @@ static const struct named_register {
 	unsigned int engine_mask;
 	uint32_t offset;
 	uint32_t count;
+	int parser_version;
 } nonpriv_registers[] = {
-	{ "NOPID", NOCTX, RCS0, 0x2094 },
-	{ "MI_PREDICATE_RESULT_2", NOCTX, RCS0, 0x23bc },
-	{ "INSTPM", GEN9, RCS0, 0x20c0 },
-	{ "IA_VERTICES_COUNT", GEN4, RCS0, 0x2310, 2 },
-	{ "IA_PRIMITIVES_COUNT", GEN4, RCS0, 0x2318, 2 },
-	{ "VS_INVOCATION_COUNT", GEN4, RCS0, 0x2320, 2 },
-	{ "HS_INVOCATION_COUNT", GEN4, RCS0, 0x2300, 2 },
-	{ "DS_INVOCATION_COUNT", GEN4, RCS0, 0x2308, 2 },
-	{ "GS_INVOCATION_COUNT", GEN4, RCS0, 0x2328, 2 },
-	{ "GS_PRIMITIVES_COUNT", GEN4, RCS0, 0x2330, 2 },
-	{ "CL_INVOCATION_COUNT", GEN4, RCS0, 0x2338, 2 },
-	{ "CL_PRIMITIVES_COUNT", GEN4, RCS0, 0x2340, 2 },
-	{ "PS_INVOCATION_COUNT_0", GEN4, RCS0, 0x22c8, 2 },
-	{ "PS_DEPTH_COUNT_0", GEN4, RCS0, 0x22d8, 2 },
-	{ "GPUGPU_DISPATCHDIMX", GEN8, RCS0, 0x2500 },
-	{ "GPUGPU_DISPATCHDIMY", GEN8, RCS0, 0x2504 },
-	{ "GPUGPU_DISPATCHDIMZ", GEN8, RCS0, 0x2508 },
-	{ "MI_PREDICATE_SRC0", GEN8, RCS0, 0x2400, 2 },
-	{ "MI_PREDICATE_SRC1", GEN8, RCS0, 0x2408, 2 },
-	{ "MI_PREDICATE_DATA", GEN8, RCS0, 0x2410, 2 },
-	{ "MI_PRED_RESULT", GEN8, RCS0, 0x2418 },
-	{ "3DPRIM_END_OFFSET", GEN6, RCS0, 0x2420 },
-	{ "3DPRIM_START_VERTEX", GEN6, RCS0, 0x2430 },
-	{ "3DPRIM_VERTEX_COUNT", GEN6, RCS0, 0x2434 },
-	{ "3DPRIM_INSTANCE_COUNT", GEN6, RCS0, 0x2438 },
-	{ "3DPRIM_START_INSTANCE", GEN6, RCS0, 0x243c },
-	{ "3DPRIM_BASE_VERTEX", GEN6, RCS0, 0x2440 },
-	{ "GPGPU_THREADS_DISPATCHED", GEN8, RCS0, 0x2290, 2 },
-	{ "PS_INVOCATION_COUNT_1", GEN8, RCS0, 0x22f0, 2 },
-	{ "PS_DEPTH_COUNT_1", GEN8, RCS0, 0x22f8, 2 },
-	{ "BB_OFFSET", GEN8, RCS0, 0x2158 },
-	{ "MI_PREDICATE_RESULT_1", GEN8, RCS0, 0x241c },
-	{ "CS_GPR", GEN8, RCS0, 0x2600, 32 },
-	{ "OA_CTX_CONTROL", GEN8, RCS0, 0x2360 },
-	{ "OACTXID", GEN8, RCS0, 0x2364 },
-	{ "PS_INVOCATION_COUNT_2", GEN8, RCS0, 0x2448, 2 },
-	{ "PS_DEPTH_COUNT_2", GEN8, RCS0, 0x2450, 2 },
-	{ "Cache_Mode_0", GEN7, RCS0, 0x7000 },
-	{ "Cache_Mode_1", GEN7, RCS0, 0x7004 },
-	{ "GT_MODE", GEN8, RCS0, 0x7008 },
-	{ "L3_Config", GEN7, RCS0, 0x7034 },
-	{ "TD_CTL", GEN8, RCS0, 0xe400 },
-	{ "TD_CTL2", GEN8, RCS0, 0xe404 },
-	{ "SO_NUM_PRIMS_WRITEN0", GEN6, RCS0, 0x5200, 2 },
-	{ "SO_NUM_PRIMS_WRITEN1", GEN6, RCS0, 0x5208, 2 },
-	{ "SO_NUM_PRIMS_WRITEN2", GEN6, RCS0, 0x5210, 2 },
-	{ "SO_NUM_PRIMS_WRITEN3", GEN6, RCS0, 0x5218, 2 },
-	{ "SO_PRIM_STORAGE_NEEDED0", GEN6, RCS0, 0x5240, 2 },
-	{ "SO_PRIM_STORAGE_NEEDED1", GEN6, RCS0, 0x5248, 2 },
-	{ "SO_PRIM_STORAGE_NEEDED2", GEN6, RCS0, 0x5250, 2 },
-	{ "SO_PRIM_STORAGE_NEEDED3", GEN6, RCS0, 0x5258, 2 },
-	{ "SO_WRITE_OFFSET0", GEN7, RCS0, 0x5280 },
-	{ "SO_WRITE_OFFSET1", GEN7, RCS0, 0x5284 },
-	{ "SO_WRITE_OFFSET2", GEN7, RCS0, 0x5288 },
-	{ "SO_WRITE_OFFSET3", GEN7, RCS0, 0x528c },
-	{ "OA_CONTROL", NOCTX, RCS0, 0x2b00 },
-	{ "PERF_CNT_1", NOCTX, RCS0, 0x91b8, 2 },
-	{ "PERF_CNT_2", NOCTX, RCS0, 0x91c0, 2 },
+	{ "NOPID", NOCTX, RCS0, 0x2094, 1, 7 },
+	{ "MI_PREDICATE_RESULT_2", NOCTX, RCS0, 0x23bc, 1, 7 },
+	{ "INSTPM", GEN9, RCS0, 0x20c0, 1, 7 },
+	{ "IA_VERTICES_COUNT", GEN4, RCS0, 0x2310, 2, 7 },
+	{ "IA_PRIMITIVES_COUNT", GEN4, RCS0, 0x2318, 2, 7 },
+	{ "VS_INVOCATION_COUNT", GEN4, RCS0, 0x2320, 2, 7 },
+	{ "HS_INVOCATION_COUNT", GEN4, RCS0, 0x2300, 2, 7 },
+	{ "DS_INVOCATION_COUNT", GEN4, RCS0, 0x2308, 2, 7 },
+	{ "GS_INVOCATION_COUNT", GEN4, RCS0, 0x2328, 2, 7 },
+	{ "GS_PRIMITIVES_COUNT", GEN4, RCS0, 0x2330, 2, 7 },
+	{ "CL_INVOCATION_COUNT", GEN4, RCS0, 0x2338, 2, 7 },
+	{ "CL_PRIMITIVES_COUNT", GEN4, RCS0, 0x2340, 2, 7 },
+	{ "PS_INVOCATION_COUNT_0", GEN4, RCS0, 0x22c8, 2, 7 },
+	{ "PS_DEPTH_COUNT_0", GEN4, RCS0, 0x22d8, 2, 7 },
+	{ "GPUGPU_DISPATCHDIMX", GEN8, RCS0, 0x2500, 1, 7 },
+	{ "GPUGPU_DISPATCHDIMY", GEN8, RCS0, 0x2504, 1, 7 },
+	{ "GPUGPU_DISPATCHDIMZ", GEN8, RCS0, 0x2508, 1, 7 },
+	{ "MI_PREDICATE_SRC0", GEN8, RCS0, 0x2400, 2, 7 },
+	{ "MI_PREDICATE_SRC1", GEN8, RCS0, 0x2408, 2, 7 },
+	{ "MI_PREDICATE_DATA", GEN8, RCS0, 0x2410, 2, 7 },
+	{ "MI_PRED_RESULT", GEN8, RCS0, 0x2418, 1, 7 },
+	{ "3DPRIM_END_OFFSET", GEN6, RCS0, 0x2420, 1, 7 },
+	{ "3DPRIM_START_VERTEX", GEN6, RCS0, 0x2430, 1, 7 },
+	{ "3DPRIM_VERTEX_COUNT", GEN6, RCS0, 0x2434, 1, 7 },
+	{ "3DPRIM_INSTANCE_COUNT", GEN6, RCS0, 0x2438, 1, 7 },
+	{ "3DPRIM_START_INSTANCE", GEN6, RCS0, 0x243c, 1, 7 },
+	{ "3DPRIM_BASE_VERTEX", GEN6, RCS0, 0x2440, 1, 7 },
+	{ "GPGPU_THREADS_DISPATCHED", GEN8, RCS0, 0x2290, 2, 7 },
+	{ "PS_INVOCATION_COUNT_1", GEN8, RCS0, 0x22f0, 2, 7 },
+	{ "PS_DEPTH_COUNT_1", GEN8, RCS0, 0x22f8, 2, 7 },
+	{ "BB_OFFSET", GEN8, RCS0, 0x2158, 1, 7 },
+	{ "MI_PREDICATE_RESULT_1", GEN8, RCS0, 0x241c, 1, 7 },
+	{ "CS_GPR", GEN8, RCS0, 0x2600, 32, 7 },
+	{ "OA_CTX_CONTROL", GEN8, RCS0, 0x2360, 1, 7 },
+	{ "OACTXID", GEN8, RCS0, 0x2364, 1, 7 },
+	{ "PS_INVOCATION_COUNT_2", GEN8, RCS0, 0x2448, 2, 7 },
+	{ "PS_DEPTH_COUNT_2", GEN8, RCS0, 0x2450, 2, 7 },
+	{ "Cache_Mode_0", GEN7, RCS0, 0x7000, 1, 7 },
+	{ "Cache_Mode_1", GEN7, RCS0, 0x7004, 1, 7 },
+	{ "GT_MODE", GEN8, RCS0, 0x7008, 1, 7 },
+	{ "L3_Config", GEN7, RCS0, 0x7034, 1, 7 },
+	{ "TD_CTL", GEN8, RCS0, 0xe400, 1, 7 },
+	{ "TD_CTL2", GEN8, RCS0, 0xe404, 1, 7 },
+	{ "SO_NUM_PRIMS_WRITEN0", GEN6, RCS0, 0x5200, 2, 7 },
+	{ "SO_NUM_PRIMS_WRITEN1", GEN6, RCS0, 0x5208, 2, 7 },
+	{ "SO_NUM_PRIMS_WRITEN2", GEN6, RCS0, 0x5210, 2, 7 },
+	{ "SO_NUM_PRIMS_WRITEN3", GEN6, RCS0, 0x5218, 2, 7 },
+	{ "SO_PRIM_STORAGE_NEEDED0", GEN6, RCS0, 0x5240, 2, 7 },
+	{ "SO_PRIM_STORAGE_NEEDED1", GEN6, RCS0, 0x5248, 2, 7 },
+	{ "SO_PRIM_STORAGE_NEEDED2", GEN6, RCS0, 0x5250, 2, 7 },
+	{ "SO_PRIM_STORAGE_NEEDED3", GEN6, RCS0, 0x5258, 2, 7 },
+	{ "SO_WRITE_OFFSET0", GEN7, RCS0, 0x5280, 1, 7 },
+	{ "SO_WRITE_OFFSET1", GEN7, RCS0, 0x5284, 1, 7 },
+	{ "SO_WRITE_OFFSET2", GEN7, RCS0, 0x5288, 1, 7 },
+	{ "SO_WRITE_OFFSET3", GEN7, RCS0, 0x528c, 1, 7 },
+	{ "OA_CONTROL", NOCTX, RCS0, 0x2b00, 1, 7 },
+	{ "PERF_CNT_1", NOCTX, RCS0, 0x91b8, 2, 7 },
+	{ "PERF_CNT_2", NOCTX, RCS0, 0x91c0, 2, 7 },
 
 	/* Privileged (enabled by w/a + FORCE_TO_NONPRIV) */
-	{ "CTX_PREEMPT", NOCTX /* GEN_RANGE(9, 10) */, RCS0, 0x2248 },
-	{ "CS_CHICKEN1", GEN_RANGE(9, 10), RCS0, 0x2580 },
-	{ "HDC_CHICKEN1", GEN_RANGE(9, 10), RCS0, 0x7304 },
-	{ "L3SQREG1", GEN8, RCS0, 0xb010 },
+	{ "CTX_PREEMPT", NOCTX /* GEN_RANGE(9, 10) */, RCS0, 0x2248, 1, 7 },
+	{ "CS_CHICKEN1", GEN_RANGE(9, 10), RCS0, 0x2580, 1, 7 },
+	{ "HDC_CHICKEN1", GEN_RANGE(9, 10), RCS0, 0x7304, 1, 7 },
+	{ "L3SQREG1", GEN8, RCS0, 0xb010, 1, 7 },
 
-	{ "BCS_GPR", GEN9, BCS0, 0x22600, 32 },
-	{ "BCS_SWCTRL", GEN8, BCS0, 0x22200 },
+	{ "BCS_GPR", GEN9, BCS0, 0x22600, 32, 7 },
+	{ "BCS_SWCTRL", GEN8, BCS0, 0x22200, 1, 7 },
 
-	{ "VCS0_GPR", GEN9, VCS0, 0x12600, 32 },
-	{ "MFC_VDBOX1", NOCTX, VCS0, 0x12800, 64 },
+	{ "VCS0_GPR", GEN9, VCS0, 0x12600, 32, 7 },
+	{ "MFC_VDBOX1", NOCTX, VCS0, 0x12800, 64, 7 },
 
-	{ "VCS1_GPR", GEN9, VCS1, 0x1c600, 32 },
-	{ "MFC_VDBOX2", NOCTX, VCS1, 0x1c800, 64 },
+	{ "VCS1_GPR", GEN9, VCS1, 0x1c600, 32, 7 },
+	{ "MFC_VDBOX2", NOCTX, VCS1, 0x1c800, 64, 7 },
 
-	{ "VECS_GPR", GEN9, VECS0, 0x1a600, 32 },
+	{ "VECS_GPR", GEN9, VECS0, 0x1a600, 32, 7 },
 
 	{}
 }, ignore_registers[] = {
-	{ "RCS timestamp", GEN6, ~0u, 0x2358 },
-	{ "VCS0 timestamp", GEN7, ~0u, 0x12358 },
-	{ "VCS1 timestamp", GEN7, ~0u, 0x1c358 },
-	{ "BCS timestamp", GEN7, ~0u, 0x22358 },
-	{ "VECS timestamp", GEN8, ~0u, 0x1a358 },
+	{ "RCS timestamp", GEN6, ~0u, 0x2358, 1, 7 },
+	{ "VCS0 timestamp", GEN7, ~0u, 0x12358, 1, 7 },
+	{ "VCS1 timestamp", GEN7, ~0u, 0x1c358, 1, 7 },
+	{ "BCS timestamp", GEN7, ~0u, 0x22358, 1, 7 },
+	{ "VECS timestamp", GEN8, ~0u, 0x1a358, 1, 7 },
 	{}
 };
+
+int parser_version;
 
 static const char *register_name(uint32_t offset, char *buf, size_t len)
 {
 	for (const struct named_register *r = nonpriv_registers; r->name; r++) {
-		unsigned int width = r->count ? 4*r->count : 4;
+		unsigned int width = 4 * r->count;
 		if (offset >= r->offset && offset < r->offset + width) {
 			if (r->count <= 1)
 				return r->name;
@@ -170,7 +173,7 @@ static const char *register_name(uint32_t offset, char *buf, size_t len)
 static bool ignore_register(uint32_t offset)
 {
 	for (const struct named_register *r = ignore_registers; r->name; r++) {
-		unsigned int width = r->count ? 4*r->count : 4;
+		unsigned int width = 4 * r->count;
 		if (offset >= r->offset && offset < r->offset + width)
 			return true;
 	}
@@ -218,7 +221,7 @@ static uint32_t read_regs(int fd,
 		if (!(r->gen_mask & gen_bit))
 			continue;
 
-		for (unsigned count = r->count ?: 1, offset = r->offset;
+		for (unsigned count = r->count, offset = r->offset;
 		     count--; offset += 4) {
 			*b++ = 0x24 << 23 | (1 + r64b); /* SRM */
 			*b++ = offset;
@@ -279,7 +282,9 @@ static void write_regs(int fd,
 			continue;
 		if (!(r->gen_mask & gen_bit))
 			continue;
-		for (unsigned count = r->count ?: 1, offset = r->offset;
+		if (parser_version < r->parser_version)
+			continue;
+		for (unsigned count = r->count, offset = r->offset;
 		     count--; offset += 4) {
 			*b++ = 0x22 << 23 | 1; /* LRI */
 			*b++ = offset;
@@ -340,7 +345,7 @@ static void restore_regs(int fd,
 		if (!(r->gen_mask & gen_bit))
 			continue;
 
-		for (unsigned count = r->count ?: 1, offset = r->offset;
+		for (unsigned count = r->count, offset = r->offset;
 		     count--; offset += 4) {
 			*b++ = 0x29 << 23 | (1 + r64b); /* LRM */
 			*b++ = offset;
@@ -646,6 +651,20 @@ static unsigned int __has_context_isolation(int fd)
 	return value;
 }
 
+static int command_parser_version(int fd)
+{
+	int version = -1;
+	drm_i915_getparam_t gp;
+
+	gp.param = I915_PARAM_CMD_PARSER_VERSION;
+	gp.value = &version;
+
+	if (drmIoctl(fd, DRM_IOCTL_I915_GETPARAM, &gp) == 0)
+		return version;
+
+	return -1;
+}
+
 igt_main
 {
 	unsigned int has_context_isolation = 0;
@@ -660,6 +679,8 @@ igt_main
 
 		has_context_isolation = __has_context_isolation(fd);
 		igt_require(has_context_isolation);
+
+		parser_version = command_parser_version(fd);
 
 		gen = intel_gen(intel_get_drm_devid(fd));
 		//igt_ci_fail_on(gen > LAST_KNOWN_GEN);
