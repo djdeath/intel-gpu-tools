@@ -38,6 +38,7 @@
 #define OASTATUS2 0x2368
 #define OACONTROL 0x2360
 #define SO_WRITE_OFFSET_0 0x5280
+#define INSTPM 0x20c0
 
 #define HSW_CS_GPR(n) (0x2600 + 8*(n))
 #define HSW_CS_GPR0 HSW_CS_GPR(0)
@@ -369,6 +370,7 @@ static void hsw_load_register_reg(void)
 		OACONTROL, /* filtered */
 		DERRMR, /* master only */
 		0x2038, /* RING_START: invalid */
+		INSTPM, /* filtered */
 	};
 	int fd;
 	uint32_t handle;
@@ -501,6 +503,7 @@ igt_main
 
 	igt_subtest_group {
 #define REG(R, RMSK, WMSK, INI, V, OK, MIN_V) { #R, R, RMSK, WMSK, INI, V, OK, MIN_V }
+#define REGN(N, R, RMSK, WMSK, INI, V, OK, MIN_V) { N, R, RMSK, WMSK, INI, V, OK, MIN_V }
 		struct test_lri lris[] = {
 			/* dummy head pointer */
 			REG(OASTATUS2,
@@ -527,8 +530,27 @@ igt_main
 			REG(OACONTROL,
 			    0xfffff000, 0x00000000,
 			    0xfeed0000, 0x31337000, false, 9),
+			/*
+			 * INSTPM is masked and only has 3bits
+			 * allowed. We take some care not to touch all
+			 * of the bits through MMIO as this appears to
+			 * trigger hangs.
+			*/
+			REGN("INSTPM-allowed", INSTPM,
+			     0x000e, 0x000e << 16,
+			     0x0000, 0x000e, true, 9),
+			REGN("INSTPM-disallowed0", INSTPM,
+			     0x000e, 0x000e << 16,
+			     0x0000, 0x100e, false, 9),
+			REGN("INSTPM-disallowed1", INSTPM,
+			     0x000e, 0x000f << 16,
+			     0x0000, 0xffff, false, 9),
+			REGN("INSTPM-disallowed2", INSTPM,
+			     0x000e, 0x000f << 16,
+			     0x0000, 0x0000, false, 9),
 		};
 #undef REG
+#undef REGN
 
 		igt_fixture {
 			intel_register_access_init(intel_get_pci_device(), 0, fd);
