@@ -82,6 +82,86 @@ IGT_TEST_DESCRIPTION("Test the i915 perf metrics streaming interface");
 #define PIPE_CONTROL_PPGTT_WRITE	(0 << 2)
 #define PIPE_CONTROL_GLOBAL_GTT_WRITE   (1 << 2)
 
+#define MI_LOAD_REGISTER_REG (0x2a << 23)
+#define MI_LOAD_REGISTER_IMM_n(n_regs) ((0x22 << 23) | (1 + 2 * (n_regs) - 2))
+#define MI_LOAD_REGISTER_MEM (0x29 << 23)
+#define MI_STORE_REGISTER_MEM (0x24 << 23)
+#define MI_STORE_DATA_IMM (0x20 << 23)
+#define MI_CONDITIONAL_BATCH_BUFFER_END (0x36 << 23)
+
+#define MI_MATH(op_len) ((0x1a << 23) | (1 + (op_len) - 2))
+#define  MI_ALU_INSTR(opcode, src1, src2) \
+	((opcode << 20) | (src1 << 10) | (src2))
+
+#define  MI_ALU_OPCODE_NOOP                  0
+#define  MI_ALU_OPCODE_LOAD                  128
+#define  MI_ALU_OPCODE_LOADINV               1152
+#define  MI_ALU_OPCODE_LOAD0                 129
+#define  MI_ALU_OPCODE_LOAD1                 1153
+#define  MI_ALU_OPCODE_ADD                   256
+#define  MI_ALU_OPCODE_SUB                   257
+#define  MI_ALU_OPCODE_AND                   258
+#define  MI_ALU_OPCODE_OR                    259
+#define  MI_ALU_OPCODE_XOR                   260
+#define  MI_ALU_OPCODE_STORE                 384
+#define  MI_ALU_OPCODE_STOREINV              1408
+
+#define  MI_ALU_OPERAND_REG0                 0
+#define  MI_ALU_OPERAND_REG1                 1
+#define  MI_ALU_OPERAND_REG2                 2
+#define  MI_ALU_OPERAND_REG3                 3
+#define  MI_ALU_OPERAND_REG4                 4
+#define  MI_ALU_OPERAND_REG5                 5
+#define  MI_ALU_OPERAND_REG6                 6
+#define  MI_ALU_OPERAND_REG7                 7
+#define  MI_ALU_OPERAND_REG8                 8
+#define  MI_ALU_OPERAND_REG9                 9
+#define  MI_ALU_OPERAND_REG10                10
+#define  MI_ALU_OPERAND_REG11                11
+#define  MI_ALU_OPERAND_REG12                12
+#define  MI_ALU_OPERAND_REG13                13
+#define  MI_ALU_OPERAND_REG14                14
+#define  MI_ALU_OPERAND_REG15                15
+#define  MI_ALU_OPERAND_SRCA                 32
+#define  MI_ALU_OPERAND_SRCB                 33
+#define  MI_ALU_OPERAND_ACCU                 49
+#define  MI_ALU_OPERAND_ZF                   50
+#define  MI_ALU_OPERAND_CF                   51
+
+#define MI_PREDICATE (0xC << 23)
+#define  MI_PREDICATE_LOADOP_KEEP            (0 << 6)
+#define  MI_PREDICATE_LOADOP_LOAD            (2 << 6)
+#define  MI_PREDICATE_LOADOP_LOADINV         (3 << 6)
+#define  MI_PREDICATE_COMBINEOP_SET          (0 << 3)
+#define  MI_PREDICATE_COMBINEOP_AND          (1 << 3)
+#define  MI_PREDICATE_COMBINEOP_OR           (2 << 3)
+#define  MI_PREDICATE_COMBINEOP_XOR          (3 << 3)
+#define  MI_PREDICATE_COMPAREOP_TRUE         (0 << 0)
+#define  MI_PREDICATE_COMPAREOP_FALSE        (1 << 0)
+#define  MI_PREDICATE_COMPAREOP_SRCS_EQUAL   (2 << 0)
+#define  MI_PREDICATE_COMPAREOP_DELTAS_EQUAL (3 << 0)
+
+#define MI_SET_PREDICATE (0x1 << 23)
+#define  MI_SET_PREDICATE_NOOP_NEVER         (0)
+#define  MI_SET_PREDICATE_NOOP_RESULT2_CLEAR (1)
+#define  MI_SET_PREDICATE_NOOP_RESULT2_SET   (2)
+#define  MI_SET_PREDICATE_NOOP_RESULT_CLEAR  (3)
+#define  MI_SET_PREDICATE_NOOP_RESULT_SET    (4)
+#define  MI_SET_PREDICATE_1_SLICES           (5)
+#define  MI_SET_PREDICATE_2_SLICES           (6)
+#define  MI_SET_PREDICATE_3_SLICES           (7)
+
+#define MI_ARB_CHK (0x5 << 23)
+
+#define CS_GPR(n) (0x2600 + (n) * 8)
+#define RCS_TIMESTAMP (0x2000 + 0x358)
+#define MI_PREDICATE_SRC0 0x2400
+#define MI_PREDICATE_SRC1 0x2408
+#define MI_PREDICATE_DATA 0x2410
+#define MI_PREDICATE_RESULT 0x2418
+#define MI_PREDICATE_RESULT_1 0x241C
+#define MI_PREDICATE_RESULT_2 0x2214
+
 #define MAX_OA_BUF_SIZE (16 * 1024 * 1024)
 
 struct accumulator {
@@ -382,6 +462,12 @@ static uint64_t
 timebase_scale(uint32_t u32_delta)
 {
 	return ((uint64_t)u32_delta * NSEC_PER_SEC) / timestamp_frequency;
+}
+
+static uint64_t
+time_to_gpu_ticks(uint64_t ns)
+{
+	return (ns * timestamp_frequency) / NSEC_PER_SEC;
 }
 
 /* Returns: the largest OA exponent that will still result in a sampling period
@@ -3973,6 +4059,420 @@ test_whitelisted_registers_userspace_config(void)
 	i915_perf_remove_config(drm_fd, config_id);
 }
 
+static bool has_i915_perf_disable_preemption_support(int fd)
+{
+	uint64_t properties[] = {
+		DRM_I915_PERF_PROP_CTX_HANDLE, UINT64_MAX, /* updated below */
+		DRM_I915_PERF_PROP_SAMPLE_OA, true,
+		DRM_I915_PERF_PROP_DISABLE_PREEMPTION, true,
+
+		/* OA unit configuration */
+		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
+		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
+		DRM_I915_PERF_PROP_OA_EXPONENT, max_oa_exponent_for_period_lte(1000000),
+	};
+	struct drm_i915_perf_open_param param = {
+		.flags = I915_PERF_FLAG_FD_CLOEXEC,
+		.num_properties = sizeof(properties) / 16,
+		.properties_ptr = to_user_pointer(properties),
+	};
+	uint32_t context = gem_context_create(fd);
+	bool supported;
+	int ret;
+
+	properties[1] = context;
+
+	ret = igt_ioctl(drm_fd, DRM_IOCTL_I915_PERF_OPEN, &param);
+	supported = ret > 0;
+
+	if (ret > 0)
+		close(ret);
+
+	gem_context_destroy(fd, context);
+
+	return supported;
+}
+
+static uint32_t *
+fill_relocation(uint32_t *batch,
+		struct drm_i915_gem_relocation_entry *reloc,
+		uint32_t gem_handle, uint32_t delta, /* in bytes */
+		uint32_t offset, /* in dwords */
+		uint32_t read_domains, uint32_t write_domains)
+{
+	reloc->target_handle = gem_handle;
+	reloc->delta = delta;
+	reloc->offset = offset * sizeof(uint32_t);
+	reloc->presumed_offset = 0;
+	reloc->read_domains = read_domains;
+	reloc->write_domain = write_domains;
+
+	*batch++ = delta;
+	*batch++ = 0;
+
+	return batch;
+}
+
+static uint32_t
+busy_loop(uint32_t context, uint32_t duration_ns)
+{
+	struct drm_i915_gem_execbuffer2 execbuf;
+	struct drm_i915_gem_exec_object2 obj[4];
+	struct drm_i915_gem_relocation_entry start_relocs[1];
+	struct drm_i915_gem_relocation_entry chain_relocs[20];
+	uint32_t *batch, *b;
+	uint32_t data_handle;
+	int i, n_relocs;
+
+	memset(obj, 0, sizeof(obj));
+	obj[0].handle = data_handle = gem_create(drm_fd, 4096); /* data */
+	obj[1].handle = gem_create(drm_fd, 4096 * 10); /* loop batch */
+	obj[2].handle = gem_create(drm_fd, 4096); /* end batch */
+	obj[3].handle = gem_create(drm_fd, 4096); /* start batch */
+
+	batch =  gem_mmap__cpu(drm_fd, obj[0].handle, 0, 4096,
+			       PROT_READ | PROT_WRITE);
+	memset(batch, 0, 4096);
+	gem_munmap(batch, 4096);
+
+	/* start batch */
+	n_relocs = 0;
+	batch = b = gem_mmap__cpu(drm_fd, obj[3].handle, 0, 4096,
+				  PROT_READ | PROT_WRITE);
+
+	*b++ = MI_LOAD_REGISTER_REG | (3 - 2);
+	*b++ = RCS_TIMESTAMP;
+	*b++ = CS_GPR(0);
+
+	*b++ = MI_BATCH_BUFFER_START | (1 << 8) | (3 - 2);
+	b = fill_relocation(b, &start_relocs[n_relocs++], obj[1].handle,
+			    0, b - batch,
+			    I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION);
+
+	*b++ = MI_NOOP;
+	*b++ = MI_BATCH_BUFFER_END;
+
+	gem_munmap(batch, 4096);
+
+	obj[3].relocation_count = n_relocs;
+	obj[3].relocs_ptr = to_user_pointer(start_relocs);
+
+	/* end batch */
+	n_relocs = 0;
+	batch = b = gem_mmap__cpu(drm_fd, obj[2].handle, 0, 4096,
+				  PROT_READ | PROT_WRITE);
+
+	*b++ = MI_BATCH_BUFFER_END;
+	*b++ = MI_NOOP;
+
+	gem_munmap(batch, 4096);
+
+	/* loop batch */
+	n_relocs = 0;
+	batch = b = gem_mmap__cpu(drm_fd, obj[1].handle, 0, 4096 * 10,
+				  PROT_READ | PROT_WRITE);
+
+	*b++ = MI_LOAD_REGISTER_REG | (3 - 2);
+	*b++ = RCS_TIMESTAMP;
+	*b++ = CS_GPR(1);
+
+	*b++ = MI_LOAD_REGISTER_IMM_n(1);
+	*b++ = CS_GPR(2);
+	*b++ = time_to_gpu_ticks(duration_ns);
+
+	*b++ = MI_LOAD_REGISTER_IMM_n(1);
+	*b++ = CS_GPR(3);
+	*b++ = 1;
+
+	*b++ = MI_LOAD_REGISTER_MEM | (4 - 2);
+	*b++ = CS_GPR(4);
+	b = fill_relocation(b, &chain_relocs[n_relocs++], obj[0].handle,
+			    16, b - batch,
+			    I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
+
+	*b++ = MI_MATH(4);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_LOAD,
+			    MI_ALU_OPERAND_SRCA,
+			    MI_ALU_OPERAND_REG1);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_LOAD,
+			    MI_ALU_OPERAND_SRCB,
+			    MI_ALU_OPERAND_REG0);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_SUB,
+			    MI_ALU_OPERAND_SRCA,
+			    MI_ALU_OPERAND_SRCB);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_STORE,
+			    MI_ALU_OPERAND_REG5,
+			    MI_ALU_OPERAND_ACCU);
+
+	*b++ = MI_MATH(5);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_LOAD,
+			    MI_ALU_OPERAND_SRCA,
+			    MI_ALU_OPERAND_REG2);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_LOAD,
+			    MI_ALU_OPERAND_SRCB,
+			    MI_ALU_OPERAND_REG5);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_SUB,
+			    MI_ALU_OPERAND_SRCA,
+			    MI_ALU_OPERAND_SRCB);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_STORE,
+			    MI_ALU_OPERAND_REG6,
+			    MI_ALU_OPERAND_ACCU);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_STORE,
+			    MI_ALU_OPERAND_REG7,
+			    MI_ALU_OPERAND_CF);
+
+	*b++ = MI_MATH(4);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_LOAD,
+			    MI_ALU_OPERAND_SRCA,
+			    MI_ALU_OPERAND_REG3);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_LOAD,
+			    MI_ALU_OPERAND_SRCB,
+			    MI_ALU_OPERAND_REG4);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_ADD,
+			    MI_ALU_OPERAND_SRCA,
+			    MI_ALU_OPERAND_SRCB);
+	*b++ = MI_ALU_INSTR(MI_ALU_OPCODE_STORE,
+			    MI_ALU_OPERAND_REG4,
+			    MI_ALU_OPERAND_ACCU);
+
+
+	*b++ = MI_STORE_REGISTER_MEM | (4 - 2);
+	*b++ = CS_GPR(0);
+	b = fill_relocation(b, &chain_relocs[n_relocs++], obj[0].handle,
+			    0, b - batch,
+			    I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
+
+	*b++ = MI_STORE_REGISTER_MEM | (4 - 2);
+	*b++ = CS_GPR(1);
+	b = fill_relocation(b, &chain_relocs[n_relocs++], obj[0].handle,
+			    4, b - batch,
+			    I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
+
+	*b++ = MI_STORE_REGISTER_MEM | (4 - 2);
+	*b++ = CS_GPR(2);
+	b = fill_relocation(b, &chain_relocs[n_relocs++], obj[0].handle,
+			    8, b - batch,
+			    I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
+
+	*b++ = MI_STORE_REGISTER_MEM | (4 - 2);
+	*b++ = CS_GPR(3);
+	b = fill_relocation(b, &chain_relocs[n_relocs++], obj[0].handle,
+			    12, b - batch,
+			    I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
+
+	*b++ = MI_STORE_REGISTER_MEM | (4 - 2);
+	*b++ = CS_GPR(4);
+	b = fill_relocation(b, &chain_relocs[n_relocs++], obj[0].handle,
+			    16, b - batch,
+			    I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
+
+	*b++ = MI_STORE_REGISTER_MEM | (4 - 2);
+	*b++ = CS_GPR(5);
+	b = fill_relocation(b, &chain_relocs[n_relocs++], obj[0].handle,
+			    20, b - batch,
+			    I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
+
+	*b++ = MI_STORE_REGISTER_MEM | (4 - 2);
+	*b++ = CS_GPR(7);
+	b = fill_relocation(b, &chain_relocs[n_relocs++], obj[0].handle,
+			    28, b - batch,
+			    I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
+
+	igt_debug("busy delay: ns=%u ticks=%lu\n",
+		  duration_ns, time_to_gpu_ticks(duration_ns));
+
+	*b++ = MI_LOAD_REGISTER_REG | (3 - 2);
+	*b++ = CS_GPR(7);
+	*b++ = MI_PREDICATE_RESULT_1;
+
+	*b++ = MI_BATCH_BUFFER_START |
+		(1 << 8) | 1 |
+		MI_BATCH_PREDICATE_ENABLE_HSW;
+	b = fill_relocation(b, &chain_relocs[n_relocs++], obj[2].handle,
+			    0, b - batch,
+			    I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION);
+
+	*b++ = MI_ARB_CHK; /* Give some ability to preempt */
+	for (i = 0; i < 1000; i++)
+		*b++ = MI_NOOP;
+
+	*b++ = MI_STORE_REGISTER_MEM | (4 - 2);
+	*b++ = CS_GPR(6);
+	b = fill_relocation(b, &chain_relocs[n_relocs++], obj[0].handle,
+			    24, b - batch,
+			    I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
+
+	*b++ = MI_BATCH_BUFFER_START |
+		(1 << 8) | 1;
+	b = fill_relocation(b, &chain_relocs[n_relocs++], obj[1].handle,
+			    0, b - batch,
+			    I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION);
+	*b++ = MI_NOOP;
+	*b++ = MI_BATCH_BUFFER_END;
+	*b++ = MI_NOOP;
+
+	gem_munmap(batch, 4096 * 10);
+
+	obj[1].relocation_count = n_relocs;
+	obj[1].relocs_ptr = to_user_pointer(chain_relocs);
+
+	/**/
+	memset(&execbuf, 0, sizeof(execbuf));
+	execbuf.buffers_ptr = to_user_pointer(obj);
+	execbuf.buffer_count = ARRAY_SIZE(obj);
+	i915_execbuffer2_set_context_id(execbuf, context);
+
+	gem_execbuf(drm_fd, &execbuf);
+
+	for (i = 1 /* skip data_handle */; i < ARRAY_SIZE(obj); i++)
+		gem_close(drm_fd, obj[i].handle);
+
+	return data_handle;
+}
+
+/*
+ * Verify that preemption is put on hold for the context we filter
+ * with when the perf stream is opened with the
+ * DRM_I915_PERF_PROP_DISABLE_PREEMPTION property.
+ */
+static void
+test_single_ctx_counters_disabled_preemption(void)
+{
+	uint64_t properties[] = {
+		DRM_I915_PERF_PROP_CTX_HANDLE, UINT64_MAX, /* updated below */
+		DRM_I915_PERF_PROP_SAMPLE_OA, true,
+		DRM_I915_PERF_PROP_DISABLE_PREEMPTION, true,
+
+		/* OA unit configuration */
+		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
+		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
+		DRM_I915_PERF_PROP_OA_EXPONENT, max_oa_exponent_for_period_lte(1000000),
+	};
+	struct drm_i915_perf_open_param param = {
+		.flags = I915_PERF_FLAG_FD_CLOEXEC,
+		.num_properties = sizeof(properties) / 16,
+		.properties_ptr = to_user_pointer(properties),
+	};
+	uint32_t perf_context = gem_context_create(drm_fd);
+	uint32_t preempt_context = gem_context_create(drm_fd);
+	uint32_t perf_data_handle, preempt_data_handle;
+	uint32_t perf_data[10], preempt_data[10];
+	int i, perf_fd, retries = 0;
+	bool timestamp_loop = false;
+
+	gem_context_set_priority(drm_fd, perf_context,
+				 I915_CONTEXT_MIN_USER_PRIORITY);
+	gem_context_set_priority(drm_fd, preempt_context,
+				 I915_CONTEXT_MAX_USER_PRIORITY);
+
+	do {
+		/*
+		 * First run without perf enabled, preemption should
+		 * happen.
+		 */
+		perf_data_handle = busy_loop(perf_context,
+					     1ULL * 1000 * 1000 * 1000);
+
+		/* Wait 500ms before kicking off another busy loop. */
+		usleep(500000);
+		preempt_data_handle = busy_loop(preempt_context, 1ULL * 1000);
+
+		gem_read(drm_fd, perf_data_handle, 0,
+			 perf_data, sizeof(perf_data));
+		gem_read(drm_fd, preempt_data_handle, 0,
+			 preempt_data, sizeof(preempt_data));
+
+		for (i = 0; i < ARRAY_SIZE(perf_data); i++)
+			igt_debug("perf val%i=0x%x\n", i, perf_data[i]);
+		for (i = 0; i < ARRAY_SIZE(preempt_data); i++)
+			igt_debug("preempt_perf val%i=0x%x\n", i, preempt_data[i]);
+
+		gem_close(drm_fd, perf_data_handle);
+
+		timestamp_loop = perf_data[1] < perf_data[0];
+		if (timestamp_loop) {
+			igt_assert(retries < 2);
+			retries++;
+		} else {
+			igt_assert_lte(perf_data[0], preempt_data[0]);
+			igt_assert_lte(perf_data[0], preempt_data[1]);
+			igt_assert_lte(preempt_data[0], perf_data[1]);
+			igt_assert_lte(preempt_data[1], perf_data[1]);
+		}
+	} while (timestamp_loop);
+
+	/*
+	 * Now run with perf enabled, preemption shouldn't happen.
+	 */
+
+	properties[1] = perf_context;
+	perf_fd = __perf_open(drm_fd, &param, false);
+
+	do {
+		perf_data_handle = busy_loop(perf_context,
+					     1ULL * 1000 * 1000 * 1000);
+
+		/* Wait 500ms before kicking off another busy loop. */
+		usleep(500000);
+		preempt_data_handle = busy_loop(preempt_context, 1ULL * 1000);
+
+		gem_read(drm_fd, perf_data_handle, 0, perf_data, sizeof(perf_data));
+		gem_read(drm_fd, preempt_data_handle, 0,
+			 preempt_data, sizeof(preempt_data));
+
+		for (i = 0; i < ARRAY_SIZE(perf_data); i++)
+			igt_debug("perf val%i=0x%x\n", i, perf_data[i]);
+		for (i = 0; i < ARRAY_SIZE(preempt_data); i++)
+			igt_debug("preempt_perf val%i=0x%x\n", i, preempt_data[i]);
+
+		gem_close(drm_fd, perf_data_handle);
+
+		timestamp_loop = preempt_data[1] < perf_data[0];
+		if (timestamp_loop) {
+			igt_assert(retries < 2);
+			retries++;
+		} else {
+			igt_assert_lte(perf_data[0], preempt_data[0]);
+			igt_assert_lte(perf_data[0], preempt_data[1]);
+			igt_assert_lte(perf_data[1], preempt_data[0]);
+			igt_assert_lte(perf_data[1], preempt_data[1]);
+		}
+	} while (timestamp_loop);
+
+	__perf_close(perf_fd);
+
+	gem_context_destroy(drm_fd, perf_context);
+	gem_context_destroy(drm_fd, preempt_context);
+}
+
+/*
+ * Verify that holding preemption is not available for normal users
+ * unless they perf_stream_paranoid is off.
+ */
+static void
+test_unprivileged_single_ctx_counters_disabled_preemption(void)
+{
+	igt_fork(child, 1) {
+		write_u64_file("/proc/sys/dev/i915/perf_stream_paranoid", 1);
+
+		igt_drop_root();
+
+		igt_assert(!has_i915_perf_disable_preemption_support(drm_fd));
+	}
+
+	igt_waitchildren();
+
+	igt_fork(child, 1) {
+		write_u64_file("/proc/sys/dev/i915/perf_stream_paranoid", 0);
+
+		igt_drop_root();
+
+		igt_assert(has_i915_perf_disable_preemption_support(drm_fd));
+	}
+
+	igt_waitchildren();
+}
+
 static unsigned
 read_i915_module_ref(void)
 {
@@ -4205,6 +4705,16 @@ igt_main
 
 	igt_subtest("whitelisted-registers-userspace-config")
 		test_whitelisted_registers_userspace_config();
+
+	igt_subtest("single-ctx-counters-disabled-preemption") {
+		igt_require(has_i915_perf_disable_preemption_support(drm_fd));
+		test_single_ctx_counters_disabled_preemption();
+	}
+
+	igt_subtest("unprivileged-single-ctx-counters-disabled-preemption") {
+		igt_require(has_i915_perf_disable_preemption_support(drm_fd));
+		test_unprivileged_single_ctx_counters_disabled_preemption();
+	}
 
 	igt_fixture {
 		/* leave sysctl options in their default state... */
