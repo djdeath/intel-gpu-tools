@@ -252,6 +252,7 @@ static int verbose = 0;
 static bool device_override;
 static uint32_t device;
 static int addr_bits = 0;
+static bool legacy_submission = false;
 
 #define MAX_BO_COUNT 64 * 1024
 
@@ -299,7 +300,7 @@ struct drm_i915_gem_userptr {
 
 static inline bool use_execlists(void)
 {
-	return gen >= 8;
+	return gen >= 8 && !legacy_submission;
 }
 
 static void __attribute__ ((format(__printf__, 2, 3)))
@@ -1112,6 +1113,8 @@ maybe_init(void)
 			fail_if(files[1] == NULL,
 				"intel_aubdump: failed to launch command '%s'\n",
 				value);
+		} else if (!strcmp(key,  "legacy")) {
+			legacy_submission = true;
 		} else {
 			fprintf(stderr, "intel_aubdump: unknown option '%s'\n", key);
 		}

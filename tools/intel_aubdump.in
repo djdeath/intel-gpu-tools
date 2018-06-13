@@ -15,6 +15,9 @@ contents and execution of the GEM application.
 
       --device=ID    Override PCI ID of the reported device
 
+      --legacy       Emit legacy ring buffer submission (instead of writing
+                     pagetables & using execlists submissions)
+
   -v                 Enable verbose output
 
       --help         Display this help message and exit
@@ -77,6 +80,10 @@ while true; do
 	      ;;
 	  --device=*)
 	      add_arg "device=${1##--device=}"
+	      shift
+	      ;;
+	  --legacy)
+	      add_arg "legacy=1"
 	      shift
 	      ;;
 	  --help)
