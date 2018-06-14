@@ -15,6 +15,7 @@ libigt_chipset_la_SOURCES = \
 	intel_chipset.c \
 	intel_chipset.h \
 	intel_device_info.c
+libigt_chipset_la_CFLAGS = -Wno-override-init
 
 noinst_LTLIBRARIES = libintel_tools.la libigt_perf.la libigt_chipset.la
 noinst_HEADERS = check-ndebug.h

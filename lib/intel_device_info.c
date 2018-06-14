@@ -5,61 +5,75 @@
 
 #define BIT(x) (1<<(x))
 
+#define DEFAULT_PARAMS \
+	.simulator_id = -1
+
 static const struct intel_device_info intel_generic_info = {
+	DEFAULT_PARAMS,
 	.gen = 0,
 };
 
 static const struct intel_device_info intel_i810_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(0),
 	.is_whitney = true,
 	.codename = "solano" /* 815 == "whitney" ? or vice versa? */
 };
 
 static const struct intel_device_info intel_i815_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(0),
 	.is_whitney = true,
 	.codename = "whitney"
 };
 
 static const struct intel_device_info intel_i830_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(1),
 	.is_almador = true,
 	.codename = "almador"
 };
 static const struct intel_device_info intel_i845_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(1),
 	.is_brookdale = true,
 	.codename = "brookdale"
 };
 static const struct intel_device_info intel_i855_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(1),
 	.is_mobile = true,
 	.is_montara = true,
 	.codename = "montara"
 };
 static const struct intel_device_info intel_i865_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(1),
 	.is_springdale = true,
 	.codename = "spingdale"
 };
 
 static const struct intel_device_info intel_i915_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(2),
 	.is_grantsdale = true,
 	.codename = "grantsdale"
 };
 static const struct intel_device_info intel_i915m_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(2),
 	.is_mobile = true,
 	.is_alviso = true,
 	.codename = "alviso"
 };
 static const struct intel_device_info intel_i945_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(2),
 	.is_lakeport = true,
 	.codename = "lakeport"
 };
 static const struct intel_device_info intel_i945m_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(2),
 	.is_mobile = true,
 	.is_calistoga = true,
@@ -67,11 +81,13 @@ static const struct intel_device_info intel_i945m_info = {
 };
 
 static const struct intel_device_info intel_g33_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(2),
 	.is_bearlake = true,
 	.codename = "bearlake"
 };
 static const struct intel_device_info intel_pineview_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(2),
 	.is_mobile = true,
 	.is_pineview = true,
@@ -79,12 +95,14 @@ static const struct intel_device_info intel_pineview_info = {
 };
 
 static const struct intel_device_info intel_i965_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(3),
 	.is_broadwater = true,
 	.codename = "broadwater"
 };
 
 static const struct intel_device_info intel_i965m_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(3),
 	.is_mobile = true,
 	.is_crestline = true,
@@ -92,11 +110,13 @@ static const struct intel_device_info intel_i965m_info = {
 };
 
 static const struct intel_device_info intel_g45_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(3),
 	.is_eaglelake = true,
 	.codename = "eaglelake"
 };
 static const struct intel_device_info intel_gm45_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(3),
 	.is_mobile = true,
 	.is_cantiga = true,
@@ -104,51 +124,62 @@ static const struct intel_device_info intel_gm45_info = {
 };
 
 static const struct intel_device_info intel_ironlake_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(4),
 	.is_ironlake = true,
 	.codename = "ironlake" /* clarkdale? */
 };
 static const struct intel_device_info intel_ironlake_m_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(4),
 	.is_mobile = true,
 	.is_arrandale = true,
 	.codename = "arrandale"
 };
 
-static const struct intel_device_info intel_sandybridge_info = {
-	.gen = BIT(5),
-	.is_sandybridge = true,
+#define SNB_PARAMS \
+	DEFAULT_PARAMS, \
+	.gen = BIT(5), \
+	.is_sandybridge = true, \
 	.codename = "sandybridge"
+
+static const struct intel_device_info intel_sandybridge_info = {
+	SNB_PARAMS,
 };
 static const struct intel_device_info intel_sandybridge_m_info = {
-	.gen = BIT(5),
+	SNB_PARAMS,
 	.is_mobile = true,
-	.is_sandybridge = true,
-	.codename = "sandybridge"
 };
 
+#define IVB_PARAMS \
+	DEFAULT_PARAMS, \
+	.gen = BIT(6), \
+	.is_ivybridge = true, \
+	.codename = "ivybridge", \
+	.simulator_id = 7
+
 static const struct intel_device_info intel_ivybridge_info = {
-	.gen = BIT(6),
-	.is_ivybridge = true,
-	.codename = "ivybridge"
+	IVB_PARAMS,
 };
 static const struct intel_device_info intel_ivybridge_m_info = {
-	.gen = BIT(6),
+	IVB_PARAMS,
 	.is_mobile = true,
-	.is_ivybridge = true,
-	.codename = "ivybridge"
 };
 
 static const struct intel_device_info intel_valleyview_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(6),
 	.is_valleyview = true,
-	.codename = "valleyview"
+	.codename = "valleyview",
+	.simulator_id = 10,
 };
 
 #define HASWELL_FIELDS \
+	DEFAULT_PARAMS, \
 	.gen = BIT(6), \
 	.is_haswell = true, \
-	.codename = "haswell"
+	.codename = "haswell", \
+	.simulator_id = 9
 
 static const struct intel_device_info intel_haswell_gt1_info = {
 	HASWELL_FIELDS,
@@ -166,9 +197,11 @@ static const struct intel_device_info intel_haswell_gt3_info = {
 };
 
 #define BROADWELL_FIELDS \
+	DEFAULT_PARAMS, \
 	.gen = BIT(7), \
 	.is_broadwell = true, \
-	.codename = "broadwell"
+	.codename = "broadwell", \
+	.simulator_id = 11
 
 static const struct intel_device_info intel_broadwell_gt1_info = {
 	BROADWELL_FIELDS,
@@ -190,15 +223,19 @@ static const struct intel_device_info intel_broadwell_unknown_info = {
 };
 
 static const struct intel_device_info intel_cherryview_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(7),
 	.is_cherryview = true,
-	.codename = "cherryview"
+	.codename = "cherryview",
+	.simulator_id = 13,
 };
 
 #define SKYLAKE_FIELDS \
+	DEFAULT_PARAMS, \
 	.gen = BIT(8), \
 	.codename = "skylake", \
-	.is_skylake = true
+	.is_skylake = true, \
+	.simulator_id = 12
 
 static const struct intel_device_info intel_skylake_gt1_info = {
 	SKYLAKE_FIELDS,
@@ -221,15 +258,19 @@ static const struct intel_device_info intel_skylake_gt4_info = {
 };
 
 static const struct intel_device_info intel_broxton_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(8),
 	.is_broxton = true,
-	.codename = "broxton"
+	.codename = "broxton",
+	.simulator_id = 14,
 };
 
 #define KABYLAKE_FIELDS \
+	DEFAULT_PARAMS, \
 	.gen = BIT(8), \
 	.is_kabylake = true, \
-	.codename = "kabylake"
+	.codename = "kabylake", \
+	.simulator_id = 16
 
 static const struct intel_device_info intel_kabylake_gt1_info = {
 	KABYLAKE_FIELDS,
@@ -252,15 +293,19 @@ static const struct intel_device_info intel_kabylake_gt4_info = {
 };
 
 static const struct intel_device_info intel_geminilake_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(8),
 	.is_geminilake = true,
-	.codename = "geminilake"
+	.codename = "geminilake",
+	.simulator_id = 17,
 };
 
 #define COFFEELAKE_FIELDS \
+	DEFAULT_PARAMS, \
 	.gen = BIT(8), \
 	.is_coffeelake = true, \
-	.codename = "coffeelake"
+	.codename = "coffeelake", \
+	.simulator_id = 24
 
 static const struct intel_device_info intel_coffeelake_gt1_info = {
 	COFFEELAKE_FIELDS,
@@ -278,15 +323,19 @@ static const struct intel_device_info intel_coffeelake_gt3_info = {
 };
 
 static const struct intel_device_info intel_cannonlake_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(9),
 	.is_cannonlake = true,
-	.codename = "cannonlake"
+	.codename = "cannonlake",
+	.simulator_id = 15,
 };
 
 static const struct intel_device_info intel_icelake_info = {
+	DEFAULT_PARAMS,
 	.gen = BIT(10),
 	.is_icelake = true,
-	.codename = "icelake"
+	.codename = "icelake",
+	.simulator_id = 18,
 };
 
 static const struct pci_id_match intel_device_match[] = {

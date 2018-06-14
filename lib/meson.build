@@ -97,6 +97,7 @@ lib_version = vcs_tag(input : 'version.h.in', output : 'version.h',
 lin_igt_chipset_build = static_library('igt_chipset',
                                        ['intel_chipset.c',
                                         'intel_device_info.c'],
+                                       c_args : [ '-Wno-override-init' ],
                                        include_directories : inc)
 
 lib_igt_chipset = declare_dependency(link_with : lin_igt_chipset_build,

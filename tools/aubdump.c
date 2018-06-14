@@ -247,7 +247,7 @@ static int (*libc_ioctl)(int fd, unsigned long request, ...) = ioctl_init_helper
 static int drm_fd = -1;
 static char *filename = NULL;
 static FILE *files[2] = { NULL, NULL };
-static int gen = 0;
+static const struct intel_device_info *devinfo = NULL;
 static int verbose = 0;
 static bool device_override;
 static uint32_t device;
@@ -300,7 +300,7 @@ struct drm_i915_gem_userptr {
 
 static inline bool use_execlists(void)
 {
-	return gen >= 8 && !legacy_submission;
+	return devinfo->gen >= 8 && !legacy_submission;
 }
 
 static void __attribute__ ((format(__printf__, 2, 3)))
@@ -506,7 +506,7 @@ write_execlists_header(void)
 	dwords = 5 + app_name_len / sizeof(uint32_t);
 	dword_out(CMD_MEM_TRACE_VERSION | (dwords - 1));
 	dword_out(AUB_MEM_TRACE_VERSION_FILE_VERSION);
-	dword_out(AUB_MEM_TRACE_VERSION_DEVICE_CNL);
+	dword_out(devinfo->simulator_id << AUB_MEM_TRACE_VERSION_DEVICE_SHIFT);
 	dword_out(0);		/* version */
 	dword_out(0);		/* version */
 	data_out(app_name, app_name_len);
@@ -744,7 +744,7 @@ aub_dump_execlist(uint64_t batch_offset, int ring_flag)
 					  AUB_MEM_TRACE_MEMORY_ADDRESS_SPACE_GGTT);
 	dword_out(16); /* RING_BUFFER_TAIL */
 
-	if (gen >= 11) {
+	if (devinfo->gen >= 11) {
 		register_write_out(elsq_reg, descriptor & 0xFFFFFFFF);
 		register_write_out(elsq_reg + sizeof(uint32_t), descriptor >> 32);
 		register_write_out(control_reg, 1);
@@ -759,7 +759,7 @@ aub_dump_execlist(uint64_t batch_offset, int ring_flag)
 	dword_out(status_reg);
 	dword_out(AUB_MEM_TRACE_REGISTER_SIZE_DWORD |
 		  AUB_MEM_TRACE_REGISTER_SPACE_MMIO);
-	if (gen >= 11) {
+	if (devinfo->gen >= 11) {
 		dword_out(0x00000001);	/* mask lo */
 		dword_out(0x00000000);	/* mask hi */
 		dword_out(0x00000001);
@@ -892,18 +892,18 @@ dump_execbuffer2(int fd, struct drm_i915_gem_execbuffer2 *execbuffer2)
 	/* We can't do this at open time as we're not yet authenticated. */
 	if (device == 0) {
 		device = gem_get_param(fd, I915_PARAM_CHIPSET_ID);
-		fail_if(device == 0 || gen == -1, "failed to identify chipset\n");
+		fail_if(device == 0 || devinfo == NULL, "failed to identify chipset\n");
 	}
-	if (gen == 0) {
-		gen = intel_gen(device);
+	if (!devinfo) {
+		devinfo = intel_get_device_info(device);
 
-		/* If we don't know the device gen, then it probably is a
-		 * newer device. Set gen to some arbitrarily high number.
+		/* If we don't know the device gen, we need to update
+		 * the database.
 		 */
-		if (gen == 0)
-			gen = 9999;
+		fail_if(devinfo == NULL ||
+			devinfo->gen == 0, "failed to identify device from id\n");
 
-		addr_bits = gen >= 8 ? 48 : 32;
+		addr_bits = devinfo->gen >= 8 ? 48 : 32;
 
 		if (use_execlists())
 			write_execlists_header();
@@ -912,8 +912,8 @@ dump_execbuffer2(int fd, struct drm_i915_gem_execbuffer2 *execbuffer2)
 
 		if (verbose)
 			printf("[intel_aubdump: running, "
-			       "output file %s, chipset id 0x%04x, gen %d]\n",
-			       filename, device, gen);
+			       "output file %s, chipset id 0x%04x, gen %d, %s]\n",
+			       filename, device, devinfo->gen, devinfo->codename);
 	}
 
 	if (use_execlists())
