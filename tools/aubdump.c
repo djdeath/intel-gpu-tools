@@ -41,6 +41,7 @@
 
 #include "intel_aub.h"
 #include "intel_chipset.h"
+#include "intel_reg.h"
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof((x)[0]))
@@ -117,7 +118,7 @@
 static const uint32_t render_context_init[GEN10_LR_CONTEXT_RENDER_SIZE /
 					  sizeof(uint32_t)] = {
 	0 /* MI_NOOP */,
-	0x1100101B /* MI_LOAD_REGISTER_IMM */,
+	MI_LOAD_REGISTER_IMM_n(14) | MI_LRI_FORCE_POSTED,
 	0x2244 /* CONTEXT_CONTROL */,		0x90009 /* Inhibit Synchronous Context Switch | Engine Context Restore Inhibit */,
 	0x2034 /* RING_HEAD */,			0,
 	0x2030 /* RING_TAIL */,			0,
@@ -136,7 +137,7 @@ static const uint32_t render_context_init[GEN10_LR_CONTEXT_RENDER_SIZE /
 	0, 0,
 
 	0 /* MI_NOOP */,
-	0x11001011 /* MI_LOAD_REGISTER_IMM */,
+	MI_LOAD_REGISTER_IMM_n(9) | MI_LRI_FORCE_POSTED,
 	0x23A8 /* CTX_TIMESTAMP */,	0,
 	0x228C /* PDP3_UDW */,		0,
 	0x2288 /* PDP3_LDW */,		0,
@@ -150,15 +151,15 @@ static const uint32_t render_context_init[GEN10_LR_CONTEXT_RENDER_SIZE /
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 
 	0 /* MI_NOOP */,
-	0x11000001 /* MI_LOAD_REGISTER_IMM */,
+	MI_LOAD_REGISTER_IMM_n(1),
 	0x20C8 /* R_PWR_CLK_STATE */, 0x7FFFFFFF,
-	0x05000001 /* MI_BATCH_BUFFER_END */
+	MI_BATCH_BUFFER_END
 };
 
 static const uint32_t blitter_context_init[GEN8_LR_CONTEXT_OTHER_SIZE /
 					   sizeof(uint32_t)] = {
 	0 /* MI_NOOP */,
-	0x11001015 /* MI_LOAD_REGISTER_IMM */,
+	MI_LOAD_REGISTER_IMM_n(11) | MI_LRI_FORCE_POSTED,
 	0x22244 /* CONTEXT_CONTROL */,		0x90009 /* Inhibit Synchronous Context Switch | Engine Context Restore Inhibit */,
 	0x22034 /* RING_HEAD */,		0,
 	0x22030 /* RING_TAIL */,		0,
@@ -174,7 +175,7 @@ static const uint32_t blitter_context_init[GEN8_LR_CONTEXT_OTHER_SIZE /
 	0, 0, 0, 0, 0, 0, 0, 0,
 
 	0 /* MI_NOOP */,
-	0x11001011,
+	MI_LOAD_REGISTER_IMM_n(9) | MI_LRI_FORCE_POSTED,
 	0x223A8 /* CTX_TIMESTAMP */,	0,
 	0x2228C /* PDP3_UDW */,		0,
 	0x22288 /* PDP3_LDW */,		0,
@@ -187,13 +188,13 @@ static const uint32_t blitter_context_init[GEN8_LR_CONTEXT_OTHER_SIZE /
 	/* MI_NOOP */
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 
-	0x05000001 /* MI_BATCH_BUFFER_END */
+	MI_BATCH_BUFFER_END
 };
 
 static const uint32_t video_context_init[GEN8_LR_CONTEXT_OTHER_SIZE /
 					 sizeof(uint32_t)] = {
 	0 /* MI_NOOP */,
-	0x11001015 /* MI_LOAD_REGISTER_IMM */,
+	MI_LOAD_REGISTER_IMM_n(11) | MI_LRI_FORCE_POSTED,
 	0x1C244 /* CONTEXT_CONTROL */,		0x90009 /* Inhibit Synchronous Context Switch | Engine Context Restore Inhibit */,
 	0x1C034 /* RING_HEAD */,		0,
 	0x1C030 /* RING_TAIL */,		0,
@@ -209,7 +210,7 @@ static const uint32_t video_context_init[GEN8_LR_CONTEXT_OTHER_SIZE /
 	0, 0, 0, 0, 0, 0, 0, 0,
 
 	0 /* MI_NOOP */,
-	0x11001011,
+	MI_LOAD_REGISTER_IMM_n(9) | MI_LRI_FORCE_POSTED,
 	0x1C3A8 /* CTX_TIMESTAMP */,	0,
 	0x1C28C /* PDP3_UDW */,		0,
 	0x1C288 /* PDP3_LDW */,		0,
@@ -222,7 +223,7 @@ static const uint32_t video_context_init[GEN8_LR_CONTEXT_OTHER_SIZE /
 	/* MI_NOOP */
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 
-	0x05000001 /* MI_BATCH_BUFFER_END */
+	MI_BATCH_BUFFER_END
 };
 
 static int close_init_helper(int fd);
