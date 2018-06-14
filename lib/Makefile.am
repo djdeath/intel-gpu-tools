@@ -11,7 +11,12 @@ libigt_perf_la_SOURCES = \
 	igt_perf.c	 \
 	igt_perf.h
 
-noinst_LTLIBRARIES = libintel_tools.la libigt_perf.la
+libigt_chipset_la_SOURCES = \
+	intel_chipset.c \
+	intel_chipset.h \
+	intel_device_info.c
+
+noinst_LTLIBRARIES = libintel_tools.la libigt_perf.la libigt_chipset.la
 noinst_HEADERS = check-ndebug.h
 
 if BUILD_VC4
@@ -77,6 +82,7 @@ AM_CFLAGS = \
 AM_CFLAGS += $(CAIRO_CFLAGS)
 
 libintel_tools_la_LIBADD = \
+	libigt_chipset.la \
 	$(DRM_LIBS) \
 	$(PCIACCESS_LIBS) \
 	$(PROCPS_LIBS) \

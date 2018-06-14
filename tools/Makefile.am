@@ -26,7 +26,7 @@ module_LTLIBRARIES = intel_aubdump.la
 moduledir = $(libdir)
 intel_aubdump_la_LDFLAGS = -module -avoid-version -no-undefined
 intel_aubdump_la_SOURCES = aubdump.c
-intel_aubdump_la_LIBADD = $(top_builddir)/lib/libintel_tools.la -ldl
+intel_aubdump_la_LIBADD = $(top_builddir)/lib/libigt_chipset.la -ldl
 
 intel_gpu_top_LDADD = $(top_builddir)/lib/libigt_perf.la
 
