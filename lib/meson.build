@@ -21,8 +21,6 @@ lib_sources = [
 	'igt_x86.c',
 	'instdone.c',
 	'intel_batchbuffer.c',
-	'intel_chipset.c',
-	'intel_device_info.c',
 	'intel_os.c',
 	'intel_mmio.c',
 	'ioctl_wrappers.c',
@@ -96,7 +94,15 @@ lib_version = vcs_tag(input : 'version.h.in', output : 'version.h',
 		      fallback : 'NO-GIT',
 		      command : [ 'git', 'log', '-n1', '--pretty=format:g%h' ] )
 
-lib_intermediates = []
+lin_igt_chipset_build = static_library('igt_chipset',
+                                       ['intel_chipset.c',
+                                        'intel_device_info.c'],
+                                       include_directories : inc)
+
+lib_igt_chipset = declare_dependency(link_with : lin_igt_chipset_build,
+                                     include_directories : inc)
+
+lib_intermediates = [lin_igt_chipset_build]
 foreach f: lib_sources
     name = f.underscorify(f)
     lib = static_library('igt-' + name,
@@ -123,14 +129,6 @@ lib_igt = declare_dependency(link_with : lib_igt_build,
 			    include_directories : inc)
 
 igt_deps = [ lib_igt ] + lib_deps
-
-lin_igt_chipset_build = static_library('igt_chipset',
-                                       ['intel_chipset.c',
-                                        'intel_device_info.c'],
-                                       include_directories : inc)
-
-lib_igt_chipset = declare_dependency(link_with : lin_igt_chipset_build,
-                                     include_directories : inc)
 
 lib_igt_perf_build = static_library('igt_perf',
 	['igt_perf.c'],
