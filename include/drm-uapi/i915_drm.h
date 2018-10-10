@@ -98,6 +98,7 @@ enum drm_i915_gem_engine_class {
 	I915_ENGINE_CLASS_COPY		= 1,
 	I915_ENGINE_CLASS_VIDEO		= 2,
 	I915_ENGINE_CLASS_VIDEO_ENHANCE	= 3,
+	I915_ENGINE_CLASS_COMPUTE	= 4,
 
 	I915_ENGINE_CLASS_INVALID	= -1
 };
@@ -319,6 +320,7 @@ typedef struct _drm_i915_sarea {
 #define DRM_I915_PERF_ADD_CONFIG	0x37
 #define DRM_I915_PERF_REMOVE_CONFIG	0x38
 #define DRM_I915_QUERY			0x39
+#define DRM_I915_GEM_MMAP2		0x3a
 
 #define DRM_IOCTL_I915_INIT		DRM_IOW( DRM_COMMAND_BASE + DRM_I915_INIT, drm_i915_init_t)
 #define DRM_IOCTL_I915_FLUSH		DRM_IO ( DRM_COMMAND_BASE + DRM_I915_FLUSH)
@@ -377,6 +379,7 @@ typedef struct _drm_i915_sarea {
 #define DRM_IOCTL_I915_PERF_ADD_CONFIG	DRM_IOW(DRM_COMMAND_BASE + DRM_I915_PERF_ADD_CONFIG, struct drm_i915_perf_oa_config)
 #define DRM_IOCTL_I915_PERF_REMOVE_CONFIG	DRM_IOW(DRM_COMMAND_BASE + DRM_I915_PERF_REMOVE_CONFIG, __u64)
 #define DRM_IOCTL_I915_QUERY			DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_QUERY, struct drm_i915_query)
+#define DRM_IOCTL_I915_GEM_MMAP2		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP2, struct drm_i915_gem_mmap2)
 
 /* Allow drivers to submit batchbuffers directly to hardware, relying
  * on the security mechanisms provided by hardware.
@@ -528,6 +531,37 @@ typedef struct drm_i915_irq_wait {
  * might vary depending on the parts.
  */
 #define I915_PARAM_CS_TIMESTAMP_FREQUENCY 51
+
+/*
+ * Once upon a time we supposed that writes through the GGTT would be
+ * immediately in physical memory (once flushed out of the CPU path). However,
+ * on a few different processors and chipsets, this is not necessarily the case
+ * as the writes appear to be buffered internally. Thus a read of the backing
+ * storage (physical memory) via a different path (with different physical tags
+ * to the indirect write via the GGTT) will see stale values from before
+ * the GGTT write. Inside the kernel, we can for the most part keep track of
+ * the different read/write domains in use (e.g. set-domain), but the assumption
+ * of coherency is baked into the ABI, hence reporting its true state in this
+ * parameter.
+ *
+ * Reports true when writes via mmap_gtt are immediately visible following an
+ * lfence to flush the WCB.
+ *
+ * Reports false when writes via mmap_gtt are indeterminately delayed in an in
+ * internal buffer and are _not_ immediately visible to third parties accessing
+ * directly via mmap_cpu/mmap_wc. Use of mmap_gtt as part of an IPC
+ * communications channel when reporting false is strongly disadvised.
+ */
+#define I915_PARAM_MMAP_GTT_COHERENT	52
+
+/* Dual Context / Compute-only Engine */
+#define I915_PARAM_HAS_CCS		53
+
+/* Total local memory in bytes */
+#define I915_PARAM_LMEM_TOTAL_BYTES 54
+
+/* Available local memory in bytes */
+#define I915_PARAM_LMEM_AVAIL_BYTES 55
 
 typedef struct drm_i915_getparam {
 	__s32 param;
@@ -699,6 +733,19 @@ struct drm_i915_gem_mmap_gtt {
 	 * This is a fixed-size type for 32/64 compatibility.
 	 */
 	__u64 offset;
+};
+
+struct drm_i915_gem_mmap2 {
+	/** Handle for the object being mapped. */
+	__u32 handle;
+	__u32 pad;
+	/**
+	 * Fake offset to use for subsequent mmap call
+	 *
+	 * This is a fixed-size type for 32/64 compatibility.
+	 */
+	__u64 offset;
+	__u64 flags;
 };
 
 struct drm_i915_gem_set_domain {
@@ -948,6 +995,7 @@ struct drm_i915_gem_execbuffer2 {
 #define I915_EXEC_BSD                    (2<<0)
 #define I915_EXEC_BLT                    (3<<0)
 #define I915_EXEC_VEBOX                  (4<<0)
+#define I915_EXEC_COMPUTE                (5<<0)
 
 /* Used for switching the constants addressing mode on gen4+ RENDER ring.
  * Gen6+ only supports relative addressing to dynamic state (default) and
@@ -1509,6 +1557,14 @@ enum drm_i915_perf_property_id {
 	 *   80ns * 2^(period_exponent + 1)
 	 */
 	DRM_I915_PERF_PROP_OA_EXPONENT,
+
+        /**
+         * Specify a global OA buffer size to be allocated in bytes.
+         * The driver will allocate a HW supported size that is at
+         * least as large as specified by this property. Larger sizes
+         * than what the HW supports will fail.
+         */
+        DRM_I915_PERF_PROP_OA_BUFFER_SIZE,
 
 	DRM_I915_PERF_PROP_MAX /* non-ABI */
 };
