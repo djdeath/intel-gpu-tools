@@ -2363,9 +2363,6 @@ test_buffer_fill(void)
 	int n_full_oa_reports = oa_buf_size / report_size;
 	uint64_t fill_duration = n_full_oa_reports * oa_period;
 
-	load_helper_init();
-	load_helper_run(HIGH);
-
 	igt_assert(fill_duration < 1000000000);
 
 	stream_fd = __perf_open(drm_fd, &param, true /* prevent_pm */);
@@ -2478,9 +2475,6 @@ test_buffer_fill(void)
 	free(buf);
 
 	__perf_close(stream_fd);
-
-	load_helper_stop();
-	load_helper_fini();
 }
 
 static void
