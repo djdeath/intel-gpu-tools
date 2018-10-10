@@ -2334,11 +2334,32 @@ test_polling(void)
 	__perf_close(stream_fd);
 }
 
-static void
-test_buffer_fill(void)
+static int
+find_oa_exponent_for_buffer_fill_time(size_t oa_buf_size, size_t report_size, uint64_t fill_time_ns)
 {
-	/* ~5 micro second period */
-	int oa_exponent = max_oa_exponent_for_period_lte(5000);
+	size_t n_reports = oa_buf_size / report_size;
+
+	for (int e = 1; e < 32; e++) {
+		if (fill_time_ns < oa_exponent_to_ns(e) * n_reports)
+			return e;
+	}
+
+	igt_assert(!"reached");
+	return -1;
+}
+
+static void
+test_buffer_fill(bool program_size, size_t oa_buf_size)
+{
+	size_t report_size = get_oa_format(test_oa_format).size;
+	/*
+	 * Select an exponent that guarantees that the buffer fills up
+	 * in about 40ms. Otherwise the nanosleep might be too short
+	 * which makes the test unreliable, in particular on small
+	 * cores.
+	 */
+	int oa_exponent = find_oa_exponent_for_buffer_fill_time(oa_buf_size, report_size,
+								40 * 1000 * 1000UL);
 	uint64_t oa_period = oa_exponent_to_ns(oa_exponent);
 	uint64_t properties[] = {
 		/* Include OA reports in samples */
@@ -2348,18 +2369,18 @@ test_buffer_fill(void)
 		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
 		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
 		DRM_I915_PERF_PROP_OA_EXPONENT, oa_exponent,
+		DRM_I915_PERF_PROP_OA_BUFFER_SIZE, oa_buf_size,
 	};
 	struct drm_i915_perf_open_param param = {
 		.flags = I915_PERF_FLAG_FD_CLOEXEC,
-		.num_properties = sizeof(properties) / 16,
+		.num_properties = program_size ?
+		(ARRAY_SIZE(properties) / 2) : ((ARRAY_SIZE(properties) / 2) - 1),
 		.properties_ptr = to_user_pointer(properties),
 	};
 	struct drm_i915_perf_record_header *header;
 	int buf_size = 65536 * (256 + sizeof(struct drm_i915_perf_record_header));
 	uint8_t *buf = malloc(buf_size);
 	int len;
-	size_t oa_buf_size = DEFAULT_OA_BUF_SIZE;
-	size_t report_size = get_oa_format(test_oa_format).size;
 	int n_full_oa_reports = oa_buf_size / report_size;
 	uint64_t fill_duration = n_full_oa_reports * oa_period;
 
@@ -2396,8 +2417,9 @@ test_buffer_fill(void)
 
 		do_ioctl(stream_fd, I915_PERF_IOCTL_DISABLE, 0);
 
-		igt_debug("fill_duration = %"PRIu64"ns, oa_exponent = %u\n",
-			  fill_duration, oa_exponent);
+		igt_debug("fill_duration = %"PRIu64"ns/%"PRIu64"us/%"PRIu64"ms, oa_exponent = %u, buf_size = %lu\n",
+			  fill_duration, fill_duration / 1000, fill_duration / 1000000,
+			  oa_exponent, oa_buf_size);
 
 		do_ioctl(stream_fd, I915_PERF_IOCTL_ENABLE, 0);
 
@@ -2475,6 +2497,35 @@ test_buffer_fill(void)
 	free(buf);
 
 	__perf_close(stream_fd);
+}
+
+static void
+test_invalid_buffer_size()
+{
+	uint64_t properties[] = {
+		/* Include OA reports in samples */
+		DRM_I915_PERF_PROP_SAMPLE_OA, true,
+
+		/* OA unit configuration */
+		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
+		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
+		DRM_I915_PERF_PROP_OA_EXPONENT, max_oa_exponent_for_period_lte(5000),
+		DRM_I915_PERF_PROP_OA_BUFFER_SIZE, 0 /* updated below */,
+	};
+	struct drm_i915_perf_open_param param = {
+		.flags = I915_PERF_FLAG_FD_CLOEXEC,
+		.num_properties = ARRAY_SIZE(properties) / 2,
+		.properties_ptr = to_user_pointer(properties),
+	};
+
+	properties[ARRAY_SIZE(properties) - 1] = DEFAULT_OA_BUF_SIZE + 1;
+	do_ioctl_err(drm_fd, DRM_IOCTL_I915_PERF_OPEN, &param, EINVAL);
+
+	properties[ARRAY_SIZE(properties) - 1] = 0xffffffff;
+	do_ioctl_err(drm_fd, DRM_IOCTL_I915_PERF_OPEN, &param, EINVAL);
+
+	properties[ARRAY_SIZE(properties) - 1] = 0xffffffffffffffff;
+	do_ioctl_err(drm_fd, DRM_IOCTL_I915_PERF_OPEN, &param, EINVAL);
 }
 
 static void
@@ -4079,6 +4130,32 @@ test_sysctl_defaults(void)
 	igt_assert_eq(max_freq, 100000);
 }
 
+static bool
+kernel_supports_open_option(int fd, uint64_t option, uint64_t value)
+{
+	uint64_t properties[] = {
+		/* Intentionally wrong handle */
+		DRM_I915_PERF_PROP_CTX_HANDLE, UINT64_MAX,
+
+		DRM_I915_PERF_PROP_SAMPLE_OA, true,
+		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
+		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
+		DRM_I915_PERF_PROP_OA_EXPONENT, max_oa_exponent_for_period_lte(5000),
+		option, value,
+	};
+	struct drm_i915_perf_open_param param = {
+		.flags = I915_PERF_FLAG_FD_CLOEXEC,
+		.num_properties = ARRAY_SIZE(properties) / 2,
+		.properties_ptr = to_user_pointer(properties),
+	};
+	int ret;
+
+	ret = igt_ioctl(fd, DRM_IOCTL_I915_PERF_OPEN, &param);
+	assert(ret == -1);
+
+	return errno == ENOENT;
+}
+
 igt_main
 {
 	igt_skip_on_simulation();
@@ -4152,7 +4229,25 @@ igt_main
 	}
 
 	igt_subtest("buffer-fill")
-		test_buffer_fill();
+		test_buffer_fill(false, DEFAULT_OA_BUF_SIZE);
+
+	igt_subtest("buffer-fill-sized") {
+		size_t size = 128 * 1024; /* Smallest HW supported size. */
+		const size_t max_size = DEFAULT_OA_BUF_SIZE;
+
+		igt_require(kernel_supports_open_option(drm_fd, DRM_I915_PERF_PROP_OA_BUFFER_SIZE, 0));
+
+		while (size <= max_size) {
+			test_buffer_fill(true, size);
+			size *= 2;
+		}
+	}
+
+	igt_subtest("invalid-buffer-size") {
+		igt_require(kernel_supports_open_option(drm_fd, DRM_I915_PERF_PROP_OA_BUFFER_SIZE, 0));
+
+		test_invalid_buffer_size();
+	}
 
 	igt_subtest("disabled-read-error")
 		test_disabled_read_error();
