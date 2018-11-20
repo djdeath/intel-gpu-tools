@@ -73,6 +73,7 @@ test_progs = [
 	'sw_sync',
 	'syncobj_basic',
 	'syncobj_wait',
+	'syncobj_timeline',
 	'template',
 	'tools_test',
 	'v3d_get_bo_offset',
