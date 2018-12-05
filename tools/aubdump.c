@@ -1027,7 +1027,7 @@ dump_execbuffer2(int fd, struct drm_i915_gem_execbuffer2 *execbuffer2)
 				struct drm_syncobj_array arg = {
 					.handles = (uintptr_t)&fences[i].handle,
 					.count_handles = 1,
-					.pad = 0,
+					.flags = 0,
 				};
 				libc_ioctl(fd, DRM_IOCTL_SYNCOBJ_SIGNAL, &arg);
 			}

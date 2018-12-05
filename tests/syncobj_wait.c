@@ -214,13 +214,13 @@ test_reset_one_illegal_handle(int fd)
 }
 
 static void
-test_reset_bad_pad(int fd)
+test_reset_bad_flags(int fd)
 {
 	struct local_syncobj_array array = { 0 };
 	uint32_t handle = 0;
 	int ret;
 
-	array.pad = 0xdeadbeef;
+	array.flags = 0xdeadbeef;
 	array.count_handles = 1;
 	array.handles = to_user_pointer(&handle);
 	ret = drmIoctl(fd, LOCAL_IOCTL_SYNCOBJ_RESET, &array);
@@ -278,13 +278,13 @@ test_signal_one_illegal_handle(int fd)
 }
 
 static void
-test_signal_bad_pad(int fd)
+test_signal_bad_flags(int fd)
 {
 	struct local_syncobj_array array = { 0 };
 	uint32_t handle = 0;
 	int ret;
 
-	array.pad = 0xdeadbeef;
+	array.flags = 0xdeadbeef;
 	array.count_handles = 1;
 	array.handles = to_user_pointer(&handle);
 	ret = drmIoctl(fd, LOCAL_IOCTL_SYNCOBJ_SIGNAL, &array);
@@ -785,8 +785,8 @@ igt_main
 	igt_subtest("invalid-reset-one-illegal-handle")
 		test_reset_one_illegal_handle(fd);
 
-	igt_subtest("invalid-reset-bad-pad")
-		test_reset_bad_pad(fd);
+	igt_subtest("invalid-reset-bad-flags")
+		test_reset_bad_flags(fd);
 
 	igt_subtest("invalid-signal-zero-handles")
 		test_signal_zero_handles(fd);
@@ -797,8 +797,8 @@ igt_main
 	igt_subtest("invalid-signal-one-illegal-handle")
 		test_signal_one_illegal_handle(fd);
 
-	igt_subtest("invalid-signal-bad-pad")
-		test_signal_bad_pad(fd);
+	igt_subtest("invalid-signal-bad-flags")
+		test_signal_bad_flags(fd);
 
 	for (unsigned flags = 0; flags < WAIT_FLAGS_MAX; flags++) {
 		int err;
