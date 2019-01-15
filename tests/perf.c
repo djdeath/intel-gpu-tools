@@ -3724,6 +3724,129 @@ gen8_test_single_ctx_render_target_writes_a_counter(void)
 	} while (WEXITSTATUS(child_ret) == EAGAIN);
 }
 
+/*
+ * Verifies that the I915_PERF_IOCTL_FLUSH_DATA ioctl forces the
+ * i915-perf driver to look at the available data in the OA buffer.
+ */
+static void
+test_flush_data(void)
+{
+	size_t report_size = get_oa_format(test_oa_format).size;
+	int oa_exponent =
+		find_oa_exponent_for_buffer_fill_time(MAX_OA_BUF_SIZE,
+						      report_size,
+						      500 * 1000 * 1000 /* 500ms */);
+	uint64_t oa_period = oa_exponent_to_ns(oa_exponent);
+	size_t oa_buf_size = MAX_OA_BUF_SIZE;
+	int n_full_oa_reports = oa_buf_size / report_size;
+	uint64_t fill_duration = n_full_oa_reports * oa_period;
+	uint64_t properties[] = {
+		/* Include OA reports in samples */
+		DRM_I915_PERF_PROP_SAMPLE_OA, true,
+
+		/* OA unit configuration */
+		DRM_I915_PERF_PROP_OA_METRICS_SET, test_metric_set_id,
+		DRM_I915_PERF_PROP_OA_FORMAT, test_oa_format,
+		DRM_I915_PERF_PROP_OA_EXPONENT, oa_exponent,
+		DRM_I915_PERF_PROP_OA_ENABLE_INTERRUPT, true,
+
+		/* Kernel configuration */
+		DRM_I915_PERF_PROP_POLL_OA_DELAY, 0,
+	};
+	struct drm_i915_perf_open_param param = {
+		.flags = I915_PERF_FLAG_FD_CLOEXEC |
+		         I915_PERF_FLAG_FD_NONBLOCK |
+		         I915_PERF_FLAG_DISABLED,
+		.num_properties = ARRAY_SIZE(properties) / 2,
+		.properties_ptr = to_user_pointer(properties),
+	};
+	struct pollfd pollfd = { .events = POLLIN };
+	struct drm_i915_perf_record_header *header;
+	int buf_size = 65536 * (256 + sizeof(struct drm_i915_perf_record_header));
+	uint8_t *buf = malloc(buf_size);
+	uint32_t n_reports = 0, expected_reports, min_reports, max_reports;
+	int ret;
+
+	expected_reports = n_full_oa_reports / 5;
+	min_reports = expected_reports - expected_reports * 0.05;
+	max_reports = expected_reports + expected_reports * 0.05;
+
+	stream_fd = __perf_open(drm_fd, &param, false /* prevent_pm */);
+	pollfd.fd = stream_fd;
+
+	igt_debug("Fill duration for %s\n", pretty_print_oa_period(fill_duration));
+	igt_debug("Polling for %s\n", pretty_print_oa_period(fill_duration / 5));
+
+	do_ioctl(stream_fd, I915_PERF_IOCTL_ENABLE, 0);
+
+	/*
+	 * Wait for a fifth the fill duration, no data should be
+	 * available through poll()/read().
+	 */
+	while ((ret = poll(&pollfd, 1, fill_duration / (5 * 1000 * 1000))) < 0 &&
+	       errno == EINTR)
+		;
+
+	igt_assert_eq(ret, 0);
+	igt_assert_eq(pollfd.revents, 0);
+
+	while ((ret = read(stream_fd, buf, MAX_OA_BUF_SIZE)) < 0 &&
+	       errno == EINTR)
+		;
+
+	igt_assert_eq(ret, -1);
+	igt_assert_eq(errno, EAGAIN);
+
+	/* Now force the driver to look at the head/tail pointers. */
+	ret = igt_ioctl(stream_fd, I915_PERF_IOCTL_FLUSH_DATA, 0);
+
+	/* Is this supported on this kernel? */
+	igt_skip_on(ret == -1 && errno == EINVAL);
+
+	/* Now poll() should report available data. */
+	while ((ret = poll(&pollfd, 1, 0)) < 0 &&
+	       errno == EINTR)
+		;
+
+	igt_assert_eq(ret, 1);
+	igt_assert(pollfd.revents & POLLIN);
+
+	/* And we should be able to read it. */
+	while ((ret = read(stream_fd, buf, MAX_OA_BUF_SIZE)) < 0 &&
+	       errno == EINTR)
+		;
+
+	igt_assert_lte(report_size, ret);
+
+	for (int offset = 0; offset < ret; offset += header->size) {
+		header = (void *)(buf + offset);
+
+		switch (header->type) {
+		case DRM_I915_PERF_RECORD_SAMPLE:
+			n_reports++;
+			break;
+		case DRM_I915_PERF_RECORD_OA_BUFFER_LOST:
+			igt_assert(!"unexpected overflow");
+			break;
+		}
+	}
+
+	igt_debug("Got %i report(s), expected range [%u, %u]\n",
+		  n_reports, min_reports, max_reports);
+
+	/*
+	 * Verify that we get about a third of the OA buffer full of
+	 * report as we've waited for a third of the time it teakes to
+	 * fill the buffer.
+	 */
+	igt_assert_lte(n_reports, max_reports);
+	igt_assert_lte(min_reports, n_reports);
+
+	free(buf);
+
+	__perf_close(stream_fd);
+}
+
 static unsigned long rc6_residency_ms(void)
 {
 	return sysfs_read("power/rc6_residency_ms");
@@ -4439,6 +4562,12 @@ igt_main
 			       fill_time / 4,
 			       true /* interrupt */, false /* no loss */, true /* use_polling */,
 			       (fill_time / 4) * max_reports / fill_time);
+	}
+
+	igt_subtest("flush-data") {
+		igt_require(i915_perf_revision(drm_fd) >= 2);
+
+		test_flush_data();
 	}
 
 	igt_subtest("short-reads")
