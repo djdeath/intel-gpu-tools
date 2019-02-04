@@ -519,7 +519,7 @@ static void
 test_reset_during_wait_for_submit(int fd)
 {
 	uint32_t syncobj = syncobj_create(fd, 0);
-	uint32_t flags = LOCAL_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT;
+	uint32_t flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT;
 	struct fd_handle_pair pair;
 	uint64_t point = 1;
 	timer_t timer;
@@ -542,7 +542,7 @@ static void
 test_signal(int fd)
 {
 	uint32_t syncobj = syncobj_create(fd, 0);
-	uint32_t flags = LOCAL_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT;
+	uint32_t flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT;
 	uint64_t point = 1;
 
 	igt_assert_eq(syncobj_timeline_wait_err(fd, &syncobj, &point,
