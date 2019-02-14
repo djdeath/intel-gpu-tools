@@ -72,6 +72,7 @@ test_progs = [
 	'prime_vgem',
 	'sw_sync',
 	'syncobj_basic',
+	'syncobj_timeline',
 	'syncobj_wait',
 	'template',
 	'tools_test',
