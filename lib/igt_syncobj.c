@@ -130,6 +130,15 @@ __syncobj_fd_to_handle(int fd, struct drm_syncobj_handle *args)
 	return err;
 }
 
+int
+__syncobj_fd_to_handle2(int fd, struct drm_syncobj_handle2 *args)
+{
+	int err = 0;
+	if (drmIoctl(fd, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE2, args))
+		err = -errno;
+	return err;
+}
+
 /**
  * syncobj_fd_to_handle:
  * @fd: The DRM file descriptor
@@ -167,6 +176,26 @@ syncobj_import_sync_file(int fd, uint32_t handle, int sync_file)
 	args.fd = sync_file;
 	args.flags = DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE;
 	igt_assert_eq(__syncobj_fd_to_handle(fd, &args), 0);
+}
+
+/**
+ * syncobj_import_sync_file2:
+ * @fd: The DRM file descriptor
+ * @handle: Handle to the syncobj timeline to import file into
+ * @point: Point of the timeline to import file into
+ * @sync_file: The sync_file fd to import state from.
+ *
+ * Import a sync_file fd into a timeline syncobj handle.
+ */
+void
+syncobj_import_sync_file2(int fd, uint32_t handle, uint64_t point, int sync_file)
+{
+	struct drm_syncobj_handle2 args = { 0 };
+	args.handle = handle;
+	args.fd = sync_file;
+	args.flags = DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE;
+	args.value = point;
+	igt_assert_eq(__syncobj_fd_to_handle2(fd, &args), 0);
 }
 
 int
@@ -233,13 +262,52 @@ syncobj_wait(int fd, uint32_t *handles, uint32_t count,
 	return true;
 }
 
-static int
-__syncobj_reset(int fd, uint32_t *handles, uint32_t count)
+/**
+ * syncobj_wait2:
+ * @fd: The DRM file descriptor
+ * @items: List of syncobj handles to wait for.
+ * @count: Count of handles
+ * @abs_timeout_nsec: Absolute wait timeout in nanoseconds.
+ * @flags: Wait ioctl flags.
+ * @first_signaled: Returned handle for first signaled syncobj.
+ *
+ * Waits in the kernel for any/all the requested syncobjs
+ * using the timeout and flags.
+ * Returns: bool value - false = timedout, true = signaled
+ */
+bool
+syncobj_wait2(int fd, struct drm_syncobj_item *items, uint32_t count,
+	      uint64_t abs_timeout_nsec, uint32_t flags,
+	      uint32_t *first_signaled)
 {
-	struct drm_syncobj_array array = { 0 };
+	struct drm_syncobj_wait wait;
+	int ret;
+
+	wait.handles = to_user_pointer(items);
+	wait.timeout_nsec = abs_timeout_nsec;
+	wait.count_handles = count;
+	wait.flags = flags | DRM_SYNCOBJ_WAIT_FLAGS_ITEMS;
+	wait.first_signaled = 0;
+	wait.pad = 0;
+
+	ret = __syncobj_wait(fd, &wait);
+	if (ret == -ETIME)
+		return false;
+
+	igt_assert_eq(ret, 0);
+	if (first_signaled)
+		*first_signaled = wait.first_signaled;
+
+	return true;
+}
+
+static int
+__syncobj_reset(int fd, void *data, uint32_t count, uint32_t flags)
+{
+	struct drm_syncobj_array array = { .flags = flags };
 	int err = 0;
 
-	array.handles = to_user_pointer(handles);
+	array.handles = to_user_pointer(data);
 	array.count_handles = count;
 	if (drmIoctl(fd, DRM_IOCTL_SYNCOBJ_RESET, &array))
 		err = -errno;
@@ -257,16 +325,32 @@ __syncobj_reset(int fd, uint32_t *handles, uint32_t count)
 void
 syncobj_reset(int fd, uint32_t *handles, uint32_t count)
 {
-	igt_assert_eq(__syncobj_reset(fd, handles, count), 0);
+	igt_assert_eq(__syncobj_reset(fd, handles, count, 0), 0);
 }
 
-static int
-__syncobj_signal(int fd, uint32_t *handles, uint32_t count)
+/**
+ * syncobj_reset2:
+ * @fd: The DRM file descriptor.
+ * @items: Array of drm_syncobj_item to reset
+ * @count: Count of syncobj items.
+ *
+ * Reset state of a set of syncobjs.
+ */
+void
+syncobj_reset2(int fd, struct drm_syncobj_item *items, uint32_t count)
 {
-	struct drm_syncobj_array array = { 0 };
+	igt_assert_eq(__syncobj_reset(fd, items, count,
+				      DRM_SYNCOBJ_ARRAY_FLAGS_ITEMS), 0);
+}
+
+
+static int
+__syncobj_signal(int fd, void *data, uint32_t count, uint32_t flags)
+{
+	struct drm_syncobj_array array = { .flags = flags };
 	int err = 0;
 
-	array.handles = to_user_pointer(handles);
+	array.handles = to_user_pointer(data);
 	array.count_handles = count;
 	if (drmIoctl(fd, DRM_IOCTL_SYNCOBJ_SIGNAL, &array))
 		err = -errno;
@@ -284,5 +368,75 @@ __syncobj_signal(int fd, uint32_t *handles, uint32_t count)
 void
 syncobj_signal(int fd, uint32_t *handles, uint32_t count)
 {
-	igt_assert_eq(__syncobj_signal(fd, handles, count), 0);
+	igt_assert_eq(__syncobj_signal(fd, handles, count, 0), 0);
+}
+
+/**
+ * syncobj_signal2:
+ * @fd: The DRM file descriptor.
+ * @items: Array of struct drm_syncobj_item handles and payload to signal
+ * @count: Count of syncobj items.
+ *
+ * Signal a set of syncobjs with an associated payload.
+ */
+void
+syncobj_signal2(int fd, struct drm_syncobj_item *items, uint32_t count)
+{
+	igt_assert_eq(__syncobj_signal(fd, items, count,
+				       DRM_SYNCOBJ_ARRAY_FLAGS_ITEMS), 0);
+}
+
+/**
+ * syncobj_signal_point:
+ * @fd: The DRM file descriptor.
+ * @handle: A timeline syncobj handle
+ * @point: A point of the timeline syncobj
+ *
+ * Signal a timeline syncobjs with an associated payload.
+ */
+void
+syncobj_signal_point(int fd, uint32_t handle, uint64_t point)
+{
+	struct drm_syncobj_item item = { .handle = handle, .value = point };
+
+	syncobj_signal2(fd, &item, 1);
+}
+
+/**
+ * __syncobj_read_timeline:
+ * @fd: The DRM file descriptor.
+ * @items: Array of struct drm_syncobj_item handles to read the payload from
+ * @count: Count of syncobj items.
+ *
+ * Read the payload from a set of syncobj.
+ */
+int
+__syncobj_read_timeline(int fd, struct drm_syncobj_item *items, int count)
+{
+	struct drm_syncobj_array array = { 0 };
+	int err = 0;
+
+	array.flags = DRM_SYNCOBJ_ARRAY_FLAGS_ITEMS;
+	array.handles = to_user_pointer(items);
+	array.count_handles = count;
+	if (drmIoctl(fd, DRM_IOCTL_SYNCOBJ_READ_TIMELINE, &array))
+		err = -errno;
+	return err;
+}
+
+/**
+ * __syncobj_read_timeline:
+ * @fd: The DRM file descriptor.
+ * @items: Array of struct drm_syncobj_item handles to read the payload from
+ * @count: Count of syncobj items.
+ *
+ * Read the payload from a set of syncobj.
+ */
+uint64_t syncobj_read_timeline(int fd, uint32_t handle)
+{
+	struct drm_syncobj_item item = { .handle = handle };
+
+	igt_assert_eq(__syncobj_read_timeline(fd, &item, 1), 0);
+
+	return item.value;
 }

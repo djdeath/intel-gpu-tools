@@ -32,16 +32,26 @@ uint32_t syncobj_create(int fd, uint32_t flags);
 void syncobj_destroy(int fd, uint32_t handle);
 int __syncobj_handle_to_fd(int fd, struct drm_syncobj_handle *args);
 int __syncobj_fd_to_handle(int fd, struct drm_syncobj_handle *args);
+int __syncobj_fd_to_handle2(int fd, struct drm_syncobj_handle2 *args);
 int syncobj_handle_to_fd(int fd, uint32_t handle, uint32_t flags);
 uint32_t syncobj_fd_to_handle(int fd, int syncobj_fd, uint32_t flags);
 void syncobj_import_sync_file(int fd, uint32_t handle, int sync_file);
+void syncobj_import_sync_file2(int fd, uint32_t handle, uint64_t point, int sync_file);
 int __syncobj_wait(int fd, struct drm_syncobj_wait *args);
 int syncobj_wait_err(int fd, uint32_t *handles, uint32_t count,
 		     uint64_t abs_timeout_nsec, uint32_t flags);
 bool syncobj_wait(int fd, uint32_t *handles, uint32_t count,
 		  uint64_t abs_timeout_nsec, uint32_t flags,
 		  uint32_t *first_signaled);
+bool syncobj_wait2(int fd, struct drm_syncobj_item *items, uint32_t count,
+		   uint64_t abs_timeout_nsec, uint32_t flags,
+		   uint32_t *first_signaled);
 void syncobj_reset(int fd, uint32_t *handles, uint32_t count);
+void syncobj_reset2(int fd, struct drm_syncobj_item *items, uint32_t count);
 void syncobj_signal(int fd, uint32_t *handles, uint32_t count);
+void syncobj_signal2(int fd, struct drm_syncobj_item *items, uint32_t count);
+void syncobj_signal_point(int fd, uint32_t handle, uint64_t point);
+int __syncobj_read_timeline(int fd, struct drm_syncobj_item *items, int count);
+uint64_t syncobj_read_timeline(int fd, uint32_t handle);
 
 #endif /* IGT_SYNCOBJ_H */
