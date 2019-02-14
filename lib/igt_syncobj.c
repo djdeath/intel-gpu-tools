@@ -154,7 +154,7 @@ syncobj_fd_to_handle(int fd, int syncobj_fd, uint32_t flags)
 /**
  * syncobj_import_sync_file:
  * @fd: The DRM file descriptor
- * @handle: Handle to the syncobt to import file into
+ * @handle: Handle to the syncobj to import file into
  * @sync_file: The sync_file fd to import state from.
  *
  * Import a sync_file fd into a syncobj handle.
