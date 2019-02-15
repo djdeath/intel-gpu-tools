@@ -839,6 +839,237 @@ test_wait_interrupted(int fd, uint32_t test_flags)
 	close(timeline);
 }
 
+/*
+ * Verifies that as we signal points from the host, the syncobj
+ * timeline value increments and that waits for submits/signals works
+ * properly.
+ */
+static void
+test_host_signal_points(int fd)
+{
+	uint32_t syncobj = syncobj_create(fd, 0);
+	uint64_t value = 0;
+	int i;
+
+	for (i = 0; i < 100; i++) {
+		uint64_t query_value = 0;
+
+		value += rand();
+
+		syncobj_timeline_signal(fd, &syncobj, &value, 1);
+
+		syncobj_timeline_query(fd, &syncobj, &query_value, 1);
+		igt_assert_eq(query_value, value);
+
+		igt_assert(syncobj_timeline_wait(fd, &syncobj, &query_value,
+						 1, 0, WAIT_FOR_SUBMIT, NULL));
+
+		query_value -= 1;
+		igt_assert(syncobj_timeline_wait(fd, &syncobj, &query_value,
+						 1, 0, WAIT_ALL, NULL));
+	}
+
+	syncobj_destroy(fd, syncobj);
+}
+
+/*
+ * Verifies that a device signaling fences out of order on the
+ * timeline still increments the timeline monotonically and that waits
+ * work properly.
+ */
+static void
+test_device_signal_unordered(int fd)
+{
+	uint32_t syncobj = syncobj_create(fd, 0);
+	int point_indices[] = { 0, 2, 1, 4, 3 };
+	bool signaled[ARRAY_SIZE(point_indices)] = { 0 };
+	int fences[ARRAY_SIZE(point_indices)];
+	int timeline = sw_sync_timeline_create();
+	uint64_t value = 0;
+	int i, j;
+
+	for (i = 0; i < ARRAY_SIZE(fences); i++) {
+		fences[point_indices[i]] = sw_sync_timeline_create_fence(timeline, i + 1);
+	}
+
+	for (i = 0; i < ARRAY_SIZE(fences); i++) {
+		uint32_t tmp_syncobj = syncobj_create(fd, 0);
+
+		syncobj_import_sync_file(fd, tmp_syncobj, fences[i]);
+		syncobj_binary_to_timeline(fd, syncobj, i + 1, tmp_syncobj);
+		syncobj_destroy(fd, tmp_syncobj);
+	}
+
+	for (i = 0; i < ARRAY_SIZE(fences); i++) {
+		uint64_t query_value = 0;
+		uint64_t min_value = 0;
+
+		sw_sync_timeline_inc(timeline, 1);
+
+		signaled[point_indices[i]] = true;
+
+		/*
+		 * Compute a minimum value of the timeline based of
+		 * the smallest signaled point.
+		 */
+		for (j = 0; j < ARRAY_SIZE(signaled); j++) {
+			if (!signaled[j])
+				break;
+			min_value = j;
+		}
+
+		syncobj_timeline_query(fd, &syncobj, &query_value, 1);
+		igt_assert(query_value >= min_value);
+		igt_assert(query_value >= value);
+
+		igt_debug("signaling point %i, timeline value = %" PRIu64 "\n",
+			  point_indices[i] + 1, query_value);
+
+		value = max(query_value, value);
+
+		igt_assert(syncobj_timeline_wait(fd, &syncobj, &query_value,
+						 1, 0, WAIT_FOR_SUBMIT, NULL));
+
+		igt_assert(syncobj_timeline_wait(fd, &syncobj, &query_value,
+						 1, 0, WAIT_ALL, NULL));
+	}
+
+	for (i = 0; i < ARRAY_SIZE(fences); i++)
+		close(fences[i]);
+
+	syncobj_destroy(fd, syncobj);
+	close(timeline);
+}
+
+/*
+ * Verifies that submitting out of order doesn't break the timeline.
+ */
+static void
+test_device_submit_unordered(int fd)
+{
+	uint32_t syncobj = syncobj_create(fd, 0);
+	uint64_t points[] = { 1, 5, 3, 6, 7 };
+	int timeline = sw_sync_timeline_create();
+	uint64_t query_value;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(points); i++) {
+		int fence = sw_sync_timeline_create_fence(timeline, i + 1);
+		uint32_t tmp_syncobj = syncobj_create(fd, 0);
+
+		syncobj_import_sync_file(fd, tmp_syncobj, fence);
+		syncobj_binary_to_timeline(fd, syncobj, points[i], tmp_syncobj);
+		close(fence);
+		syncobj_destroy(fd, tmp_syncobj);
+	}
+
+	/*
+	 * Signal points 1, 5 & 3. There are no other points <= 5 so
+	 * waiting on 5 should return immediately for submission &
+	 * signaling.
+	 */
+	sw_sync_timeline_inc(timeline, 3);
+
+	syncobj_timeline_query(fd, &syncobj, &query_value, 1);
+	igt_assert_eq(query_value, 5);
+
+	igt_assert(syncobj_timeline_wait(fd, &syncobj, &query_value,
+					 1, 0, WAIT_FOR_SUBMIT, NULL));
+
+	igt_assert(syncobj_timeline_wait(fd, &syncobj, &query_value,
+					 1, 0, WAIT_ALL, NULL));
+
+	syncobj_destroy(fd, syncobj);
+	close(timeline);
+}
+
+/*
+ * Verifies that the host signaling fences out of order on the
+ * timeline still increments the timeline monotonically and that waits
+ * work properly.
+ */
+static void
+test_host_signal_ordered(int fd)
+{
+	uint32_t syncobj = syncobj_create(fd, 0);
+	int timeline = sw_sync_timeline_create();
+	uint64_t host_signal_value = 8, query_value;
+	int i;
+
+	for (i = 0; i < 5; i++) {
+		int fence = sw_sync_timeline_create_fence(timeline, i + 1);
+		uint32_t tmp_syncobj = syncobj_create(fd, 0);
+
+		syncobj_import_sync_file(fd, tmp_syncobj, fence);
+		syncobj_binary_to_timeline(fd, syncobj, i + 1, tmp_syncobj);
+		syncobj_destroy(fd, tmp_syncobj);
+		close(fence);
+	}
+
+	sw_sync_timeline_inc(timeline, 3);
+
+	syncobj_timeline_query(fd, &syncobj, &query_value, 1);
+	igt_assert_eq(query_value, 3);
+
+	syncobj_timeline_signal(fd, &syncobj, &host_signal_value, 1);
+
+	syncobj_timeline_query(fd, &syncobj, &query_value, 1);
+	igt_assert_eq(query_value, 3);
+
+	sw_sync_timeline_inc(timeline, 5);
+
+	syncobj_timeline_query(fd, &syncobj, &query_value, 1);
+	igt_assert_eq(query_value, 8);
+
+	syncobj_destroy(fd, syncobj);
+	close(timeline);
+}
+
+/*
+ * Verifies that host signaling  out of order doesn't break the timeline.
+ */
+static void
+test_host_signal_unordered(int fd)
+{
+	uint32_t syncobj = syncobj_create(fd, 0);
+	uint64_t points[] = { 1, 5 };
+	uint64_t host_signal_value = 3;
+	int timeline = sw_sync_timeline_create();
+	uint64_t query_value;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(points); i++) {
+		int fence = sw_sync_timeline_create_fence(timeline, i + 1);
+		uint32_t tmp_syncobj = syncobj_create(fd, 0);
+
+		syncobj_import_sync_file(fd, tmp_syncobj, fence);
+		syncobj_binary_to_timeline(fd, syncobj, points[i], tmp_syncobj);
+		close(fence);
+		syncobj_destroy(fd, tmp_syncobj);
+	}
+
+	syncobj_timeline_signal(fd, &syncobj, &host_signal_value, 1);
+
+	syncobj_timeline_query(fd, &syncobj, &query_value, 1);
+	igt_assert_eq(query_value, 0);
+
+	sw_sync_timeline_inc(timeline, 1);
+
+	syncobj_timeline_query(fd, &syncobj, &query_value, 1);
+	igt_assert_eq(query_value, 3);
+
+	sw_sync_timeline_inc(timeline, 1);
+
+	syncobj_timeline_query(fd, &syncobj, &query_value, 1);
+	igt_assert_eq(query_value, 5);
+
+	igt_assert(syncobj_timeline_wait(fd, &syncobj, &query_value,
+					 1, 0, WAIT_ALL, NULL));
+
+	syncobj_destroy(fd, syncobj);
+	close(timeline);
+}
+
 static bool
 has_syncobj_timeline_wait(int fd)
 {
@@ -1029,4 +1260,19 @@ igt_main
 
 	igt_subtest("wait-all-interrupted")
 		test_wait_interrupted(fd, WAIT_ALL);
+
+	igt_subtest("host-signal-points")
+		test_host_signal_points(fd);
+
+	igt_subtest("device-signal-unordered")
+		test_device_signal_unordered(fd);
+
+	igt_subtest("device-submit-unordered")
+		test_device_submit_unordered(fd);
+
+	igt_subtest("host-signal-ordered")
+		test_host_signal_ordered(fd);
+
+	igt_subtest("host-signal-unordered")
+		test_host_signal_unordered(fd);
 }
