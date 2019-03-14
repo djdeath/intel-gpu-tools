@@ -333,7 +333,7 @@ __syncobj_timeline_wait(int fd, uint32_t *handles, uint64_t *points,
 	int ret;
 
 	args.handles = to_user_pointer(handles);
-	args.points = (uint64_t)to_user_pointer(points);
+	args.points = to_user_pointer(points);
 	args.timeout_nsec = timeout_nsec;
 	args.count_handles = num_handles;
 	args.flags = flags;
@@ -398,7 +398,7 @@ __syncobj_timeline_query(int fd, uint32_t *handles, uint64_t **points,
 	int ret;
 
 	args.handles = to_user_pointer(handles);
-	args.points = (uint64_t)to_user_pointer(points);
+	args.points = to_user_pointer(points);
 	args.count_handles = handle_count;
 	args.pad = 0;
 
