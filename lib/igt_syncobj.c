@@ -391,7 +391,7 @@ syncobj_timeline_wait(int fd, uint32_t *handles, uint64_t *points,
 }
 
 static int
-__syncobj_timeline_query(int fd, uint32_t *handles, uint64_t **points,
+__syncobj_timeline_query(int fd, uint32_t *handles, uint64_t *points,
 			 uint32_t handle_count)
 {
 	struct drm_syncobj_timeline_array args;
@@ -418,7 +418,7 @@ __syncobj_timeline_query(int fd, uint32_t *handles, uint64_t **points,
  * query a set of syncobjs.
  */
 void
-syncobj_timeline_query(int fd, uint32_t *handles, uint64_t **points,
+syncobj_timeline_query(int fd, uint32_t *handles, uint64_t *points,
 		       uint32_t count)
 {
 	igt_assert_eq(__syncobj_timeline_query(fd, handles, points, count), 0);

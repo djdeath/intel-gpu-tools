@@ -52,7 +52,7 @@ int syncobj_timeline_wait_err(int fd, uint32_t *handles, uint64_t *points,
 			      int64_t timeout_nsec, unsigned flags);
 void syncobj_reset(int fd, uint32_t *handles, uint32_t count);
 void syncobj_signal(int fd, uint32_t *handles, uint32_t count);
-void syncobj_timeline_query(int fd, uint32_t *handles, uint64_t **points,
+void syncobj_timeline_query(int fd, uint32_t *handles, uint64_t *points,
 			    uint32_t count);
 void syncobj_binary_to_timeline(int fd, uint32_t timeline_handle,
 				uint64_t point, uint32_t binary_handle);
