@@ -137,7 +137,7 @@ syncobj_trigger_delayed(int fd, uint32_t syncobj, uint64_t point, uint64_t nsec)
 
 	pair->fd = fd;
 	pair->handle = syncobj;
-	pair->point = syncobj;
+	pair->point = point;
 
 	return set_timer(syncobj_trigger_free_pair_func, pair, 0, nsec);
 }
