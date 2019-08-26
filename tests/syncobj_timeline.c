@@ -1206,6 +1206,61 @@ test_32bits_limit(int fd)
 	close(timeline);
 }
 
+/* Signaling a syncobj by replacing the dma_fence held by a syncobj
+ * tagged as timeline should fail.
+ */
+static void
+test_invalid_syncobj_timeline_replace(int fd)
+{
+	uint32_t syncobjs[] = {
+		syncobj_create(fd, 0),
+		syncobj_create(fd, DRM_SYNCOBJ_CREATE_TIMELINE),
+		syncobj_create(fd, 0),
+	};
+	struct drm_syncobj_timeline_array args = {
+		.handles = to_user_pointer(syncobjs),
+		.count_handles = ARRAY_SIZE(syncobjs),
+	};
+	int ret;
+
+	ret = igt_ioctl(fd, DRM_IOCTL_SYNCOBJ_SIGNAL, &args);
+	igt_assert(ret == -1 && errno ==  EINVAL);
+
+	/* Ensure the none of the syncobjs has been signaled. */
+	igt_assert(!syncobj_wait(fd, syncobjs, ARRAY_SIZE(syncobjs),
+				 gettime_ns(),
+				 DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT,
+				 NULL));
+
+	for (uint32_t i = 0; i < ARRAY_SIZE(syncobjs); i++)
+		syncobj_destroy(fd, syncobjs[i]);
+}
+
+/* Importing a syncfile holding a dma_fence into a syncobj tagged as
+ * timeline should fail.
+ */
+static void
+test_invalid_syncobj_timeline_import(int fd)
+{
+	uint32_t binary_syncobj = syncobj_create(fd, 0);
+	uint32_t timeline_syncobj = syncobj_create(fd, DRM_SYNCOBJ_CREATE_TIMELINE);
+	struct drm_syncobj_handle args = {
+		.handle = timeline_syncobj,
+		.flags = DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE,
+	};
+
+	syncobj_signal(fd, &binary_syncobj, 1);
+
+	args.fd = syncobj_handle_to_fd(fd, binary_syncobj,
+				       DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE);
+	igt_assert_eq(__syncobj_fd_to_handle(fd, &args), -EINVAL);
+
+	close(args.fd);
+
+	syncobj_destroy(fd, binary_syncobj);
+	syncobj_destroy(fd, timeline_syncobj);
+}
+
 static bool
 has_syncobj_timeline_wait(int fd)
 {
@@ -1420,4 +1475,12 @@ igt_main
 
 	igt_subtest("32bits-limit")
 		test_32bits_limit(fd);
+
+	igt_subtest_group {
+		igt_subtest("invalid-syncobj-timeline-replace")
+			test_invalid_syncobj_timeline_replace(fd);
+
+		igt_subtest("invalid-syncobj-timeline-import")
+			test_invalid_syncobj_timeline_import(fd);
+	}
 }
