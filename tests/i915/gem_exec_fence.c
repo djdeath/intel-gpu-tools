@@ -1914,6 +1914,33 @@ static void test_syncobj_timeline_repeat(int fd)
 	free(values);
 }
 
+static void test_syncobj_timeline_invalid_replace(int fd)
+{
+	const uint32_t bbe = MI_BATCH_BUFFER_END;
+	struct drm_i915_gem_exec_object2 obj;
+	struct drm_i915_gem_execbuffer2 execbuf;
+	struct drm_i915_gem_exec_fence fence = {
+		.handle = syncobj_create(fd, DRM_SYNCOBJ_CREATE_TIMELINE),
+		.flags = I915_EXEC_FENCE_SIGNAL,
+	};
+
+	memset(&execbuf, 0, sizeof(execbuf));
+	execbuf.buffers_ptr = to_user_pointer(&obj);
+	execbuf.buffer_count = 1;
+	execbuf.flags = I915_EXEC_FENCE_ARRAY;
+	execbuf.cliprects_ptr = to_user_pointer(&fence);
+	execbuf.num_cliprects = 1;
+
+	memset(&obj, 0, sizeof(obj));
+	obj.handle = gem_create(fd, 4096);
+	gem_write(fd, obj.handle, 0, &bbe, sizeof(bbe));
+
+	igt_assert_eq(__gem_execbuf(fd, &execbuf), -EINVAL);
+
+	gem_close(fd, obj.handle);
+	syncobj_destroy(fd, fence.handle);
+}
+
 igt_main
 {
 	const struct intel_execution_engine *e;
@@ -2111,6 +2138,9 @@ igt_main
 
 		igt_subtest("syncobj-timeline-repeat")
 			test_syncobj_timeline_repeat(i915);
+
+		igt_subtest("syncobj-timeline-invalid-replace")
+			test_syncobj_timeline_invalid_replace(i915);
 
 		igt_fixture {
 			igt_stop_hang_detector();
