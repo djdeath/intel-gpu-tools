@@ -107,4 +107,5 @@ conf_data.set('libdir', join_paths('${prefix}', libdir))
 configure_file(input : 'intel_aubdump.in', output : 'intel_aubdump',
                configuration : conf_data, install_dir : bindir)
 
+subdir('i915-perf')
 subdir('null_state_gen')
