@@ -20,8 +20,18 @@
  * SOFTWARE.
  */
 
+#include <assert.h>
+#include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include "intel_chipset.h"
 #include "perf.h"
@@ -191,4 +201,132 @@ intel_perf_add_metric_set(struct intel_perf *perf,
 			  struct intel_perf_metric_set *metric_set)
 {
 	igt_list_add_tail(&metric_set->link, &perf->metric_sets);
+}
+
+static bool
+read_file_uint64(const char *file, uint64_t *value)
+{
+	char buf[32];
+	int fd, n;
+
+	fd = open(file, 0);
+	if (fd < 0)
+		return false;
+	n = read(fd, buf, sizeof (buf) - 1);
+	close(fd);
+	if (n < 0)
+		return false;
+
+	buf[n] = '\0';
+	*value = strtoull(buf, 0, 0);
+
+	return true;
+}
+
+static int
+get_card_for_fd(int fd)
+{
+	struct stat sb;
+	int mjr, mnr;
+	char buffer[128];
+	DIR *drm_dir;
+	struct dirent *entry;
+	int retval = -1;
+
+	if (fstat(fd, &sb))
+		return -1;
+
+	mjr = major(sb.st_rdev);
+	mnr = minor(sb.st_rdev);
+
+	snprintf(buffer, sizeof(buffer), "/sys/dev/char/%d:%d/device/drm", mjr, mnr);
+
+	drm_dir = opendir(buffer);
+	assert(drm_dir != NULL);
+
+	while ((entry = readdir(drm_dir))) {
+		if (entry->d_type == DT_DIR && strncmp(entry->d_name, "card", 4) == 0) {
+			retval = strtoull(entry->d_name + 4, NULL, 10);
+			break;
+		}
+	}
+
+	closedir(drm_dir);
+
+	return retval;
+}
+
+static void
+load_metric_set_config(struct intel_perf_metric_set *metric_set, int drm_fd)
+{
+	struct drm_i915_perf_oa_config config;
+	uint64_t config_id = 0;
+
+	memset(&config, 0, sizeof(config));
+
+	memcpy(config.uuid, metric_set->hw_config_guid, sizeof(config.uuid));
+
+	config.n_mux_regs = metric_set->n_mux_regs;
+	config.mux_regs_ptr = (uintptr_t) metric_set->mux_regs;
+
+	config.n_boolean_regs = metric_set->n_b_counter_regs;
+	config.boolean_regs_ptr = (uintptr_t) metric_set->b_counter_regs;
+
+	config.n_flex_regs = metric_set->n_flex_regs;
+	config.flex_regs_ptr = (uintptr_t) metric_set->flex_regs;
+
+	while (ioctl(drm_fd, DRM_IOCTL_I915_PERF_ADD_CONFIG, &config) < 0 &&
+	       (errno == EAGAIN || errno == EINTR));
+
+	metric_set->perf_oa_metrics_set = config_id;
+}
+
+void
+intel_perf_load_perf_configs(struct intel_perf *perf, int drm_fd)
+{
+	int drm_card = get_card_for_fd(drm_fd);
+	struct dirent *entry;
+	char metrics_path[128];
+	DIR *metrics_dir;
+	struct intel_perf_metric_set *metric_set;
+
+	snprintf(metrics_path, sizeof(metrics_path),
+		 "/sys/class/drm/card%d/metrics", drm_card);
+	metrics_dir = opendir(metrics_path);
+	if (!metrics_dir)
+		return;
+
+	while ((entry = readdir(metrics_dir))) {
+		char *metric_id_path;
+		uint64_t metric_id;
+
+		if (entry->d_type != DT_DIR)
+			continue;
+
+		asprintf(&metric_id_path, "%s/%s/id",
+			 metrics_path, entry->d_name);
+
+		if (!read_file_uint64(metric_id_path, &metric_id)) {
+			free(metric_id_path);
+			continue;
+		}
+
+		free(metric_id_path);
+
+		igt_list_for_each(metric_set, &perf->metric_sets, link) {
+			if (!strcmp(metric_set->hw_config_guid, entry->d_name)) {
+				metric_set->perf_oa_metrics_set = metric_id;
+				break;
+			}
+		}
+	}
+
+	closedir(metrics_dir);
+
+	igt_list_for_each(metric_set, &perf->metric_sets, link) {
+		if (metric_set->perf_oa_metrics_set)
+			continue;
+
+		load_metric_set_config(metric_set, drm_fd);
+	}
 }
