@@ -1914,31 +1914,363 @@ static void test_syncobj_timeline_repeat(int fd)
 	free(values);
 }
 
-static void test_syncobj_timeline_invalid_replace(int fd)
+#define MI_INSTR(opcode, flags) (((opcode) << 23) | (flags))
+
+#define MI_LOAD_REGISTER_MEM	   MI_INSTR(0x29, 1)
+#define MI_LOAD_REGISTER_MEM_GEN8  MI_INSTR(0x29, 2)
+
+#define MI_LOAD_REGISTER_REG       MI_INSTR(0x2A, 1)
+
+#define MI_STORE_REGISTER_MEM      MI_INSTR(0x24, 1)
+#define MI_STORE_REGISTER_MEM_GEN8 MI_INSTR(0x24, 2)
+
+#define MI_MATH(x)                 MI_INSTR(0x1a, (x) - 1)
+#define MI_MATH_INSTR(opcode, op1, op2) ((opcode) << 20 | (op1) << 10 | (op2))
+/* Opcodes for MI_MATH_INSTR */
+#define   MI_MATH_NOOP			MI_MATH_INSTR(0x00,  0x0, 0x0)
+#define   MI_MATH_LOAD(op1, op2)	MI_MATH_INSTR(0x80,  op1, op2)
+#define   MI_MATH_LOADINV(op1, op2)	MI_MATH_INSTR(0x480, op1, op2)
+#define   MI_MATH_ADD			MI_MATH_INSTR(0x100, 0x0, 0x0)
+#define   MI_MATH_SUB			MI_MATH_INSTR(0x101, 0x0, 0x0)
+#define   MI_MATH_AND			MI_MATH_INSTR(0x102, 0x0, 0x0)
+#define   MI_MATH_OR			MI_MATH_INSTR(0x103, 0x0, 0x0)
+#define   MI_MATH_XOR			MI_MATH_INSTR(0x104, 0x0, 0x0)
+#define   MI_MATH_STORE(op1, op2)	MI_MATH_INSTR(0x180, op1, op2)
+#define   MI_MATH_STOREINV(op1, op2)	MI_MATH_INSTR(0x580, op1, op2)
+/* Registers used as operands in MI_MATH_INSTR */
+#define   MI_MATH_REG(x)		(x)
+#define   MI_MATH_REG_SRCA		0x20
+#define   MI_MATH_REG_SRCB		0x21
+#define   MI_MATH_REG_ACCU		0x31
+#define   MI_MATH_REG_ZF		0x32
+#define   MI_MATH_REG_CF		0x33
+
+#define HSW_CS_GPR(n) (0x600 + 8*(n))
+
+struct inter_engine_context {
+	int fd;
+
+	uint32_t increment_context;
+	uint32_t store_context;
+
+	struct intel_engine_data *engines;
+
+	struct inter_engine_batches {
+		uint32_t *increment_bb;
+		uint32_t increment_bb_len;
+		uint32_t increment_bb_handle;
+
+		uint32_t *store_bb;
+		uint32_t store_bb_len;
+		uint32_t store_bb_handle;
+	} *batches;
+
+	struct drm_i915_gem_exec_object2 engine_counter_object;
+	struct drm_i915_gem_exec_object2 output_object;
+};
+
+static void submit_timeline_execbuf(struct inter_engine_context *context,
+				    struct drm_i915_gem_execbuffer2 *execbuf,
+				    uint32_t run_engine_idx,
+				    uint32_t wait_syncobj,
+				    uint64_t wait_value,
+				    uint32_t signal_syncobj,
+				    uint64_t signal_value)
 {
-	const uint32_t bbe = MI_BATCH_BUFFER_END;
-	struct drm_i915_gem_exec_object2 obj;
-	struct drm_i915_gem_execbuffer2 execbuf;
-	struct drm_i915_gem_exec_fence fence = {
-		.handle = syncobj_create(fd, DRM_SYNCOBJ_CREATE_TIMELINE),
-		.flags = I915_EXEC_FENCE_SIGNAL,
+	uint64_t values[2] = { 0, };
+	struct drm_i915_gem_exec_fence fences[2] = { 0, };
+	struct drm_i915_gem_execbuffer_ext_timeline_fences fence_list = {
+		.base = {
+			.name = DRM_I915_GEM_EXECBUFFER_EXT_TIMELINE_FENCES,
+		},
+		.handles_ptr = to_user_pointer(fences),
+		.values_ptr = to_user_pointer(values),
 	};
 
-	memset(&execbuf, 0, sizeof(execbuf));
-	execbuf.buffers_ptr = to_user_pointer(&obj);
-	execbuf.buffer_count = 1;
-	execbuf.flags = I915_EXEC_FENCE_ARRAY;
-	execbuf.cliprects_ptr = to_user_pointer(&fence);
-	execbuf.num_cliprects = 1;
+	if (wait_syncobj) {
+		fences[fence_list.fence_count] = (struct drm_i915_gem_exec_fence) {
+			.handle = wait_syncobj,
+			.flags = I915_EXEC_FENCE_WAIT,
+		};
+		values[fence_list.fence_count] = wait_value;
+		fence_list.fence_count++;
+	}
 
-	memset(&obj, 0, sizeof(obj));
-	obj.handle = gem_create(fd, 4096);
-	gem_write(fd, obj.handle, 0, &bbe, sizeof(bbe));
+	if (signal_syncobj) {
+		fences[fence_list.fence_count] = (struct drm_i915_gem_exec_fence) {
+			.handle = signal_syncobj,
+			.flags = I915_EXEC_FENCE_SIGNAL,
+		};
+		values[fence_list.fence_count] = signal_value;
+		fence_list.fence_count++;
+	}
 
-	igt_assert_eq(__gem_execbuf(fd, &execbuf), -EINVAL);
+	if (wait_syncobj || signal_syncobj) {
+		execbuf->flags |= I915_EXEC_USE_EXTENSIONS;
+		execbuf->cliprects_ptr = to_user_pointer(&fence_list);
+	}
 
-	gem_close(fd, obj.handle);
-	syncobj_destroy(fd, fence.handle);
+	igt_debug("run_engine_idx=%i name=%s class=%u instance=%u flags=0x%lx\n",
+		  run_engine_idx,
+		  context->engines->engines[run_engine_idx].name,
+		  context->engines->engines[run_engine_idx].class,
+		  context->engines->engines[run_engine_idx].instance,
+		  context->engines->engines[run_engine_idx].flags);
+	execbuf->flags |= context->engines->engines[run_engine_idx].flags;
+
+	gem_execbuf(context->fd, execbuf);
+}
+
+/* static const uint32_t wait_engine_bb[] = { */
+/* 	MI_LOAD_REGISTER_REG, */
+/* 	0, /\* engine timestamp register*\/ */
+/* 	HSW_CS_GPR(0), */
+
+/* 	MI_LOAD_REGISTER_REG, */
+/* 	0, /\* engine timestamp register*\/ */
+/* 	HSW_CS_GPR(1), */
+
+/* 	MI_LOAD_REGISTER_IMM, */
+/* 	HSW_CS_GPR(2), */
+/* 	0, /\* *\/ */
+
+/* 	MI_MATH(4), */
+/* 	MI_MATH_LOAD(MI_MATH_REG_SRCA, MI_MATH_REG(0)), */
+/* 	MI_MATH_LOAD(MI_MATH_REG_SRCB, MI_MATH_REG(1)), */
+/* 	MI_MATH_ADD, */
+/* 	MI_MATH_STORE(MI_MATH_REG(0), MI_MATH_REG_ACCU), */
+
+/* 	MI_STORE_REGISTER_MEM_GEN8, */
+/* 	HSW_CS_GPR(0), */
+/* 	0, */
+/* 	0, */
+
+/* 	MI_BATCH_BUFFER_END, */
+/* }; */
+
+static uint32_t *build_increment_engine_bb(uint32_t mmio_base,
+					   uint32_t *len)
+{
+	uint32_t _bb[] = {
+		MI_LOAD_REGISTER_MEM_GEN8,
+		mmio_base + HSW_CS_GPR(0),
+		0,
+		0,
+
+		MI_LOAD_REGISTER_IMM,
+		mmio_base + HSW_CS_GPR(1),
+		1,
+
+		MI_MATH(4),
+		MI_MATH_LOAD(MI_MATH_REG_SRCA, MI_MATH_REG(0)),
+		MI_MATH_LOAD(MI_MATH_REG_SRCB, MI_MATH_REG(1)),
+		MI_MATH_ADD,
+		MI_MATH_STORE(MI_MATH_REG(0), MI_MATH_REG_ACCU),
+
+		MI_STORE_REGISTER_MEM_GEN8,
+		mmio_base + HSW_CS_GPR(0),
+		0,
+		0,
+
+		MI_BATCH_BUFFER_END,
+	};
+	uint32_t *bb = malloc(sizeof(_bb));
+
+	memcpy(bb, _bb, sizeof(_bb));
+	*len = sizeof(_bb);
+
+	return bb;
+}
+
+static void increment_engine(struct inter_engine_context *context,
+			     uint32_t engine_idx,
+			     uint32_t wait_syncobj,
+			     uint64_t wait_value,
+			     uint32_t signal_syncobj,
+			     uint64_t signal_value)
+{
+	struct drm_i915_gem_relocation_entry relocs[2];
+	struct drm_i915_gem_exec_object2 objects[2] = {
+		context->engine_counter_object,
+		{
+			.handle = context->batches[engine_idx].increment_bb_handle,
+			.relocs_ptr = to_user_pointer(relocs),
+			.relocation_count = ARRAY_SIZE(relocs),
+		},
+	};
+	struct drm_i915_gem_execbuffer2 execbuf = {
+		.buffers_ptr = to_user_pointer(&objects[0]),
+		.buffer_count = ARRAY_SIZE(objects),
+		.flags = I915_EXEC_HANDLE_LUT,
+		.rsvd1 = context->increment_context,
+	};
+
+	memset(relocs, 0, sizeof(relocs));
+
+	relocs[0].target_handle = 0;
+	relocs[0].delta = engine_idx * 4;
+	relocs[0].offset = 4 * 2;
+	relocs[0].presumed_offset = -1;
+
+	relocs[1].target_handle = 0;
+	relocs[1].delta = engine_idx * 4;
+	relocs[1].offset = 4 * 14;
+	relocs[1].presumed_offset = -1;
+
+	submit_timeline_execbuf(context, &execbuf, engine_idx,
+				wait_syncobj, wait_value,
+				signal_syncobj, signal_value);
+
+	context->engine_counter_object = objects[0];
+}
+
+static uint32_t *build_store_engine_bb(uint32_t mmio_base,
+				       uint32_t *len)
+{
+	uint32_t _bb[] = {
+		MI_LOAD_REGISTER_MEM_GEN8,
+		mmio_base + HSW_CS_GPR(0),
+		0,
+		0,
+
+		MI_STORE_REGISTER_MEM_GEN8,
+		mmio_base + HSW_CS_GPR(0),
+		0,
+		0,
+
+		MI_BATCH_BUFFER_END,
+	};
+	uint32_t *bb = malloc(sizeof(_bb));
+
+	memcpy(bb, _bb, sizeof(_bb));
+	*len = sizeof(_bb);
+
+	return bb;
+};
+
+static void store_engine(struct inter_engine_context *context,
+			 uint32_t run_engine_idx,
+			 uint32_t read_engine_idx,
+			 uint32_t output_idx,
+			 uint32_t wait_syncobj,
+			 uint64_t wait_value,
+			 uint32_t signal_syncobj,
+			 uint64_t signal_value)
+{
+	struct drm_i915_gem_relocation_entry relocs[2];
+	struct drm_i915_gem_exec_object2 objects[3] = {
+		context->engine_counter_object,
+		context->output_object,
+		{
+			.handle = context->batches[run_engine_idx].store_bb_handle,
+			.relocs_ptr = to_user_pointer(relocs),
+			.relocation_count = ARRAY_SIZE(relocs),
+		},
+	};
+	struct drm_i915_gem_execbuffer2 execbuf = {
+		.buffers_ptr = to_user_pointer(objects),
+		.buffer_count = ARRAY_SIZE(objects),
+		.flags = I915_EXEC_HANDLE_LUT,
+		.rsvd1 = context->store_context,
+	};
+
+	memset(relocs, 0, sizeof(relocs));
+
+	relocs[0].target_handle = 0;
+	relocs[0].delta = read_engine_idx * 4;
+	relocs[0].offset = 4 * 2;
+	relocs[0].presumed_offset = -1;
+
+	relocs[1].target_handle = 1;
+	relocs[1].delta = output_idx * 4;
+	relocs[1].offset = 4 * 6;
+	relocs[1].presumed_offset = -1;
+
+	submit_timeline_execbuf(context, &execbuf, run_engine_idx,
+				wait_syncobj, wait_value,
+				signal_syncobj, signal_value);
+
+	context->engine_counter_object = objects[0];
+	context->output_object = objects[1];
+}
+
+static void test_syncobj_timeline_chain_engines(int fd, struct intel_engine_data *engines)
+{
+	struct inter_engine_context context = {
+		.fd = fd,
+		.engines = engines,
+
+		.increment_context = gem_context_create(fd),
+		.store_context = gem_context_create(fd),
+
+		.engine_counter_object = {
+			.handle = gem_create(fd, 4096),
+		},
+		.output_object = {
+			.handle = gem_create(fd, 16 * 1024),
+		},
+	};
+	uint32_t *counter_output, *store_output;
+	uint32_t increment_timeline = syncobj_create(fd, 0),
+		store_timeline = syncobj_create(fd, 0);
+	uint64_t last_increment_value = 0, last_store_value = 0;
+
+	context.batches = calloc(engines->nengines, sizeof(*context.batches));
+	for (uint32_t e = 0; e < engines->nengines; e++) {
+		struct inter_engine_batches *batches = &context.batches[e];
+
+		batches->increment_bb =
+			build_increment_engine_bb(
+				intel_get_engine_mmio_base(
+					intel_get_device_info(intel_get_drm_devid(fd)),
+					&engines->engines[e]),
+				&batches->increment_bb_len);
+		batches->increment_bb_handle = gem_create(fd, 4096);
+		gem_write(fd, batches->increment_bb_handle, 0,
+			  batches->increment_bb, batches->increment_bb_len);
+
+		batches->store_bb =
+			build_store_engine_bb(
+				intel_get_engine_mmio_base(
+					intel_get_device_info(intel_get_drm_devid(fd)),
+					&engines->engines[e]),
+				&batches->store_bb_len);
+		batches->store_bb_handle = gem_create(fd, 4096);
+		gem_write(fd, batches->store_bb_handle, 0,
+			  batches->store_bb, batches->store_bb_len);
+	}
+
+	for (uint32_t c = 0; c < 100; c++) {
+		for (uint32_t engine = 0; engine < context.engines->nengines; engine++) {
+			uint64_t increment_value = last_increment_value++;
+
+			store_engine(&context, engine,
+				     (context.engines->nengines + engine - 1) % context.engines->nengines,
+				     c * 10 + engine,
+				     (c + engine) ? increment_timeline : 0,
+				     c * 100 + engine - 1,
+				     store_timeline, ++last_store_value);
+
+			increment_engine(&context, engine,
+					 increment_value ? increment_timeline : 0, increment_value,
+					 increment_timeline, increment_value + 1);
+		}
+	}
+
+	gem_sync(fd, context.engine_counter_object.handle);
+	gem_sync(fd, context.output_object.handle);
+
+	counter_output = gem_mmap__wc(fd, context.engine_counter_object.handle, 0, 4096, PROT_READ);
+	store_output = gem_mmap__wc(fd, context.output_object.handle, 0, 16 * 1024, PROT_READ);
+
+	for (uint32_t i = 0; i < context.engines->nengines; i++)
+		igt_debug("engine %i = %i\n", i, counter_output[i]);
+	for (uint32_t c = 0; c < 100; c++)
+		for (uint32_t i = 0; i < context.engines->nengines; i++)
+			igt_debug("engine %i read = %i\n", i, store_output[10 * c + i]);
+
+	for (uint32_t engine = 1; engine < context.engines->nengines; engine++)
+		igt_assert_eq(store_output[engine], 10);
 }
 
 igt_main
@@ -2108,11 +2440,14 @@ igt_main
 		}
 	}
 
-	igt_subtest_group { /* syncob timeline */
+	igt_subtest_group { /* syncobj timeline */
+		struct intel_engine_data engines;
+
 		igt_fixture {
 			igt_require(exec_has_timeline_fences(i915));
 			igt_assert(has_syncobj_timeline(i915));
 			igt_fork_hang_detector(i915);
+			engines = intel_init_engine_list(i915, 0);
 		}
 
 		igt_subtest("invalid-timeline-fence-array")
@@ -2139,8 +2474,10 @@ igt_main
 		igt_subtest("syncobj-timeline-repeat")
 			test_syncobj_timeline_repeat(i915);
 
-		igt_subtest("syncobj-timeline-invalid-replace")
-			test_syncobj_timeline_invalid_replace(i915);
+		igt_subtest("syncobj-timeline-chain-engines") {
+			igt_require(engines.nengines > 1);
+			test_syncobj_timeline_chain_engines(i915, &engines);
+		}
 
 		igt_fixture {
 			igt_stop_hang_detector();
