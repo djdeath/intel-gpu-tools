@@ -22,6 +22,7 @@
  */
 
 #include "drmtest.h"
+#include "intel_chipset.h"
 #include "ioctl_wrappers.h"
 
 #include "i915/gem_engine_topology.h"
@@ -336,4 +337,77 @@ bool gem_engine_is_equal(const struct intel_execution_engine2 *e1,
 			 const struct intel_execution_engine2 *e2)
 {
 	return e1->class == e2->class && e1->instance == e2->instance;
+}
+
+uint32_t intel_get_engine_mmio_base(const struct intel_device_info *devinfo,
+				    const struct intel_execution_engine2 *e)
+{
+	switch (e->class) {
+	case I915_ENGINE_CLASS_RENDER:
+		return 0x2000;
+	case I915_ENGINE_CLASS_COPY:
+		return 0x22000;
+	case I915_ENGINE_CLASS_VIDEO: {
+		uint32_t gen11_bases[] = {
+			0x1c0000,
+			0x1C4000,
+			0x1D0000,
+			0x1d4000,
+		};
+		uint32_t gen8_bases[] = {
+			0x12000,
+			0x1c000,
+		};
+		uint32_t gen6_bases[] = {
+			0x12000,
+		};
+		uint32_t gen4_bases[] = {
+			0x4000,
+		};
+		uint32_t *bases, len = 0;
+
+		if (devinfo->gen >= 11) {
+			bases = gen11_bases;
+			len = ARRAY_SIZE(gen11_bases);
+		} else if (devinfo->gen >= 8) {
+			bases = gen8_bases;
+			len = ARRAY_SIZE(gen8_bases);
+		} else if (devinfo->gen >= 6) {
+			bases = gen6_bases;
+			len = ARRAY_SIZE(gen6_bases);
+		} else if (devinfo->gen >= 4) {
+			bases = gen4_bases;
+			len = ARRAY_SIZE(gen4_bases);
+		}
+
+		if (e->instance >= len)
+			igt_assert(!"Invalid vcs instance");
+		return bases[e->instance];
+	}
+	case I915_ENGINE_CLASS_VIDEO_ENHANCE: {
+		uint32_t gen11_bases[] = {
+			0x1c8000,
+			0x1d8000,
+		};
+		uint32_t gen7_bases[] = {
+			0x1a000,
+		};
+		uint32_t *bases, len = 0;
+
+		if (devinfo->gen >= 11) {
+			bases = gen11_bases;
+			len = ARRAY_SIZE(gen11_bases);
+		} else if (devinfo->gen >= 7) {
+			bases = gen7_bases;
+			len = ARRAY_SIZE(gen7_bases);
+		}
+
+		if (e->instance >= len)
+			igt_assert(!"Invalid vcs instance");
+		return bases[e->instance];
+	}
+
+	default:
+		igt_assert(!"Invalid engine class");
+	}
 }

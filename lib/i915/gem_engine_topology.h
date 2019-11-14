@@ -27,6 +27,8 @@
 #include "igt_gt.h"
 #include "i915_drm.h"
 
+struct intel_device_info;
+
 #define GEM_MAX_ENGINES		I915_EXEC_RING_MASK + 1
 
 struct intel_engine_data {
@@ -45,6 +47,9 @@ intel_get_current_engine(struct intel_engine_data *ed);
 
 struct intel_execution_engine2 *
 intel_get_current_physical_engine(struct intel_engine_data *ed);
+
+uint32_t intel_get_engine_mmio_base(const struct intel_device_info *devinfo,
+				    const struct intel_execution_engine2 *e);
 
 void intel_next_engine(struct intel_engine_data *ed);
 
