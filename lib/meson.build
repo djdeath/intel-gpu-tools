@@ -173,6 +173,7 @@ lib_igt_perf = declare_dependency(link_with : lib_igt_perf_build,
 
 i915_perf_files = [
   'i915/perf.c',
+  'i915/perf_data_reader.c',
 ]
 
 i915_perf_hardware = [
@@ -219,6 +220,7 @@ install_headers(
   'intel_chipset.h',
   'i915/perf.h',
   'i915/perf_data.h',
+  'i915/perf_data_reader.h',
   subdir : 'i915-perf'
 )
 
